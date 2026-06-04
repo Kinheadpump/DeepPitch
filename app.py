@@ -24,26 +24,32 @@ def initialize_engine():
     return brain['backtester'], brain['model'], brain['fifa'], api
 
 # ==========================================
-# 2. FINANCIAL ADVISOR WIDGET
+# 2. FINANCIAL ADVISOR WIDGET (JETZT MIT LIVE-QUOTEN)
 # ==========================================
-def render_kelly_advisor(bankroll, probs_ml, elo_h, elo_a, team_h, team_a):
+def render_kelly_advisor(bankroll, probs_ml, elo_h, elo_a, team_h, team_a, live_odds=None):
     ai_confidence = max(probs_ml['home_win'], probs_ml['away_win'])
     ai_raw_pred = 2 if probs_ml['home_win'] > probs_ml['away_win'] else 0
     team_name = team_h if ai_raw_pred == 2 else team_a
     
-    # Buchmacher-Quote simulieren (Inkl. 5% Marge)
-    elo_win_prob = 1 / (1 + 10 ** ((elo_a - elo_h) / 400))
-    elo_loss_prob = 1 / (1 + 10 ** ((elo_h - elo_a) / 400))
-    sum_p = elo_win_prob + 0.25 + elo_loss_prob
-    
-    odds_dict = {
-        2: 1 / ((elo_win_prob / sum_p) * 1.05),
-        1: 1 / ((0.25 / sum_p) * 1.05),
-        0: 1 / ((elo_loss_prob / sum_p) * 1.05)
-    }
-    bookie_odds = odds_dict[ai_raw_pred]
-    
-    st.markdown("### 🛡️ Money Management")
+    # Entweder echte Quoten nutzen (falls angegeben) oder simulieren
+    if live_odds and live_odds[2] > 1.0 and live_odds[0] > 1.0:
+        bookie_odds = live_odds[ai_raw_pred]
+        is_live = True
+        st.markdown("### ⚡ Live-Market Money Management")
+    else:
+        # Buchmacher-Quote simulieren (Inkl. 5% Marge)
+        elo_win_prob = 1 / (1 + 10 ** ((elo_a - elo_h) / 400))
+        elo_loss_prob = 1 / (1 + 10 ** ((elo_h - elo_a) / 400))
+        sum_p = elo_win_prob + 0.25 + elo_loss_prob
+        
+        odds_dict = {
+            2: 1 / ((elo_win_prob / sum_p) * 1.05),
+            1: 1 / ((0.25 / sum_p) * 1.05),
+            0: 1 / ((elo_loss_prob / sum_p) * 1.05)
+        }
+        bookie_odds = odds_dict[ai_raw_pred]
+        is_live = False
+        st.markdown("### 🛡️ Money Management (Simulierte Quoten)")
     
     if ai_confidence >= 0.50:
         p = ai_confidence
@@ -58,21 +64,23 @@ def render_kelly_advisor(bankroll, probs_ml, elo_h, elo_a, team_h, team_a):
             st.success(f"🔥 **VALUE GEFUNDEN:** Edge von {(p - 1/bookie_odds)*100:.1f}%")
             
             c1, c2 = st.columns(2)
-            c1.metric("KI Siegchance", f"{p*100:.1f}%", help="Die von unserem V5-Modell berechnete ECHTE Wahrscheinlichkeit.")
-            c2.metric("Buchmacher Quote", f"{bookie_odds:.2f}", help="Die simulierte Standard-Quote auf dem Markt (inkl. 5% Marge des Buchmachers).")
+            c1.metric("KI Siegchance", f"{p*100:.1f}%")
+            if is_live:
+                c2.metric("Echte Buchmacher Quote", f"{bookie_odds:.2f}", "Live Markt-Daten")
+            else:
+                c2.metric("Simulierte Quote", f"{bookie_odds:.2f}")
             
             st.info(f"💰 **Kelly-Empfehlung:** Setze **{recommended_stake:.2f} €** auf **Sieg {team_name}**.")
         else:
-            st.warning(f"⚠️ **Kein Value!** KI sieht zwar {team_name} vorne, aber die Buchmacher-Quote ({bookie_odds:.2f}) ist mathematisch zu schlecht. **Keine Wette.**")
+            st.warning(f"⚠️ **Kein Value!** KI sieht zwar {team_name} vorne, aber die Quote ({bookie_odds:.2f}) ist zu schlecht. **Finger weg.**")
     else:
         st.error("❌ **FINGER WEG:** Reiner Münzwurf. Beide Teams sind zu gleichauf.")
 
-    # Der einklappbare Erklär-Bereich (Kein Feature-Creep, da standardmäßig versteckt!)
     with st.expander("ℹ️ Was bedeuten diese Finanz-Metriken?"):
         st.markdown("""
-        * **Der Edge (Value):** Buchmacher berechnen Quoten meist stur nach historischen Daten. Unsere KI nutzt aber *aktuelle Taktik- und Kaderwerte*. Liegt die KI-Chance höher als die vom Buchmacher vermutete Chance, haben wir einen "Edge" (einen unfairen Vorteil gegenüber dem System).
-        * **Buchmacher Quote:** Zeigt an, wie viel Geld du zurückbekommst. Bei einer Quote von 2.00 würdest du für 10€ Einsatz genau 20€ zurückerhalten (10€ Reingewinn).
-        * **Kelly-Empfehlung:** Eine Finanz-Formel, die genau berechnet, wie viel von deinem Kontostand du riskieren darfst. Ein riesiger *Edge* bedeutet einen hohen Einsatz. Wir nutzen **"Half-Kelly"** (die Empfehlung wird halbiert), um dich vor Pechsträhnen zu schützen, während dein Konto trotzdem stetig wächst.
+        * **Der Edge (Value):** Liegt die KI-Chance höher als die vom Buchmacher vermutete Chance, haben wir einen Edge.
+        * **Kelly-Empfehlung:** Eine Finanz-Formel, die genau berechnet, wie viel von deinem Kontostand du riskieren darfst (wir nutzen *Half-Kelly* zur Absicherung).
+        * **Live vs. Simuliert:** Wenn du echte Quoten in das Labor eingibst, wird die Empfehlung millimetergenau auf den aktuellen Markt angepasst.
         """)
 
 # ==========================================
@@ -167,8 +175,14 @@ with tab2:
         )
         
         st.divider()
-        st.markdown("#### 3. Finanzen")
-        bankroll_manual = st.number_input("Dein aktueller Wett-Kontostand (€)", min_value=10, value=1000, step=100, key="bk_manual", help="Dein virtuelles oder echtes Startkapital für die Kelly-Berechnung.")
+        st.markdown("#### 3. Finanzen & Markt")
+        bankroll_manual = st.number_input("Dein aktueller Wett-Kontostand (€)", min_value=10, value=1000, step=100, key="bk_manual")
+        
+        st.caption("Optional: Echte Buchmacher-Quoten eingeben (0.0 = Simulation nutzen)")
+        c_q1, c_qX, c_q2 = st.columns(3)
+        real_odds_h = c_q1.number_input("Sieg Team A", min_value=0.0, value=0.0, step=0.1, format="%.2f")
+        real_odds_d = c_qX.number_input("Remis (X)", min_value=0.0, value=0.0, step=0.1, format="%.2f")
+        real_odds_a = c_q2.number_input("Sieg Team B", min_value=0.0, value=0.0, step=0.1, format="%.2f")
 
     with col_output:
         st.markdown("#### 📊 KI-Analyse-Ergebnis")
@@ -195,4 +209,7 @@ with tab2:
             st.info(f"⚽ Exakter KI-Ergebnis Tipp: **{pred_h} : {pred_a}**")
             st.divider()
             
-            render_kelly_advisor(bankroll_manual, probs_ml, elo_h, elo_a, team_h, team_a)
+            # Live Quoten Dictionary (2=Heim, 1=Remis, 0=Auswärts)
+            live_odds_dict = {2: real_odds_h, 1: real_odds_d, 0: real_odds_a}
+            
+            render_kelly_advisor(bankroll_manual, probs_ml, elo_h, elo_a, team_h, team_a, live_odds=live_odds_dict)
