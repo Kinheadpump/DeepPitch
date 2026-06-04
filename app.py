@@ -12,7 +12,7 @@ st.set_page_config(page_title="DeepPitch V5 - Orakel", page_icon="🔮", layout=
 # ==========================================
 @st.cache_resource
 def initialize_engine():
-    brain_path = "data/deeppitch_v5_brain.pkl"
+    brain_path = "data/deeppitch_brain.pkl"
     if not os.path.exists(brain_path):
         st.error("🧠 **Gehirn nicht gefunden!** Bitte führe zuerst `python train.py` aus.")
         st.stop()
@@ -79,7 +79,15 @@ def render_kelly_advisor(bankroll, probs_ml, elo_h, elo_a, team_h, team_a):
 # 3. MAIN UI ROUTING
 # ==========================================
 st.title("🏆 DeepPitch V5: Das Live-Orakel")
-st.markdown("Willkommen im Cockpit. Nutze die KI, um Ineffizienzen in den Buchmacher-Quoten aufzuspüren.")
+
+# --- X-RAY DEBUGGER (Nach der Fehlersuche wieder löschen!) ---
+st.warning("🔍 **SERVER-RÖNTGENBILD:**")
+st.write("1. Aktueller Pfad des Servers:", os.getcwd())
+if os.path.exists("data"):
+    st.write("2. Dateien im Ordner 'data':", os.listdir("data"))
+else:
+    st.error("2. Ordner 'data' existiert auf dem Server NICHT!")
+# -------------------------------------------------------------
 
 with st.spinner("Lade KI-Gedächtnis..."):
     bt, model, fifa_ratings, api = initialize_engine()

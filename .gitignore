@@ -1,1 +1,28 @@
+# 1. Daten & Modelle (Die Schwergewichte)
 *.csv
+*.xlsx
+*.sqlite3
+# HINWEIS: *.pkl steht hier ABSICHTLICH NICHT, da wir unser Gehirn hochladen wollen!
+
+# 2. Python Caches & Müll
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+
+# 3. Virtuelle Umgebungen (Niemals hochladen!)
+venv/
+.venv/
+env/
+.env
+
+# 4. Betriebssystem-Müll
+.DS_Store
+Thumbs.db

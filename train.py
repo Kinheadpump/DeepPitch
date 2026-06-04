@@ -32,7 +32,7 @@ def train_and_save_model():
     }
     
     # Speichern in den data/ Ordner
-    save_path = "data/deeppitch_v5_brain.pkl"
+    save_path = "data/deeppitch_brain.pkl"
     joblib.dump(brain, save_path)
     
     file_size = os.path.getsize(save_path) / (1024 * 1024)
