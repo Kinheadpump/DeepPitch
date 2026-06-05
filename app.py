@@ -31,7 +31,7 @@ def initialize_engine():
     
     # Der Scanner bekommt nun die Lizenz, ins echte Internet zu gehen!
     scanner = LiveLineupScanner(fifa_csv_path="data/fifa_players_cloud.csv", api_key=my_sports_key)
-    
+
     return brain['backtester'], brain['model'], brain['fifa'], api, scanner
 
 # ==========================================
@@ -213,14 +213,15 @@ with tab2:
                     live_stats_h, match_logs = scanner.get_live_squad_rating(team_h)
                     
                     if live_stats_h:
-                        st.warning(f"⚠️ **ACHTUNG: {team_h} spielt mit B-Elf!**\nHistorisches Rating ({stats_h['ATT']:.1f}) wurde durch Live-Aufstellung ({live_stats_h['ATT']:.1f}) überschrieben.")
-                        stats_h = live_stats_h # HIER ÜBERSCHREIBEN WIR DIE THEORIE MIT DER REALITÄT!
+                        st.warning(f"⚠️ **ACHTUNG: {team_h} Live-Aufstellung aktiv!**\nHistorisches Rating ({stats_h['ATT']:.1f}) wurde durch reale Spieler auf dem Rasen ({live_stats_h['ATT']:.1f}) überschrieben.")
+                        stats_h = live_stats_h 
                         
-                        with st.expander("🔍 Fuzzy Matcher Logs ansehen"):
+                        with st.expander("🔍 Fuzzy Matcher & API Logs ansehen"):
                             for log in match_logs:
                                 st.text(log)
                     else:
-                        st.error("API hat keine Live-Daten für dieses Team (Demo funktioniert nur für 'Germany').")
+                        # NEU: Wir drucken die ECHTE Fehlermeldung der API auf den Bildschirm!
+                        st.error(match_logs[0])
             # ---------------------------------------
             elo_h = bt.elo.ratings.get(team_h, 1500.0)
             elo_a = bt.elo.ratings.get(team_a, 1500.0)
