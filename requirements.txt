@@ -3,7 +3,5 @@ pandas
 numpy
 scikit-learn
 scipy
-requests
 joblib
-thefuzz
-Levenshtein
+tqdm
