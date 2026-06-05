@@ -11,10 +11,7 @@ class DataLoader:
         return df[df['date'].dt.year >= start_year].copy()
 
     def load_fifa_ratings(self, file_path="data/fifa_players.csv"):
-        """Lädt und aggregiert die granularen FIFA-Ratings pro Nation"""
-        # OOM SCHUTZ & DUPLIKAT-FILTER
         if "fifa_players.csv" in file_path and os.path.exists("data/fifa_players_cloud.csv"):
-            print("🛡️ [Data-Shield] 1.2 GB Monster erkannt! Leite auf deduplizierte 'fifa_players_cloud.csv' um...")
             file_path = "data/fifa_players_cloud.csv"
             
         print(f"[Data] Lade granulare Spieler-Qualitäten (FIFA Ratings) aus {file_path}...")
@@ -36,8 +33,6 @@ class DataLoader:
                 'MID': round(mid, 2) if pd.notna(mid) else 75.0,
                 'DEF': round(dfn, 2) if pd.notna(dfn) else 75.0
             }
-            
-        print(f"[Data] Erfolgreich granulare Kader-Ratings für {len(nation_stats)} Nationen berechnet.")
         return nation_stats
 
 class EloSystem:
@@ -68,39 +63,29 @@ class EloSystem:
         self.ratings[team_a] = r_a + self.k * g_mult * (s_a - e_a)
 
     def calculate_historical_elo(self, df):
-        """Berechnet den Pre-Match Elo-Wert für den wasserdichten Backtest"""
-        print("[Features] Berechne dynamische Elo-Ratings für alle Teams...")
         df = df.sort_values('date').reset_index(drop=True)
-        elo_h_list = []
-        elo_a_list = []
+        elo_h_list, elo_a_list = [], []
 
         for _, row in df.iterrows():
-            team_h = row['home_team']
-            team_a = row['away_team']
-
+            team_h, team_a = row['home_team'], row['away_team']
             elo_h_list.append(self.get_rating(team_h))
             elo_a_list.append(self.get_rating(team_a))
-
             self.update(team_h, team_a, row['home_score'], row['away_score'], row['neutral'])
 
         df['elo_h'] = elo_h_list
         df['elo_a'] = elo_a_list
-        print("[Features] Elo-Ratings erfolgreich berechnet.")
         return df
 
 class PoissonEngine:
     def __init__(self):
-        self.max_goals = 7
+        self.max_goals = 10
 
     def predict_match_probabilities(self, team_h, team_a, is_neutral, elo_diff, att_diff, def_diff):
         base_hg = 1.3
         base_ag = 1.1 if not is_neutral else 1.3
         
-        lambda_h = base_hg + (elo_diff * 0.001) + (att_diff * 0.015)
-        lambda_a = base_ag - (elo_diff * 0.001) - (def_diff * 0.015)
-        
-        lambda_h = max(0.1, lambda_h)
-        lambda_a = max(0.1, lambda_a)
+        lambda_h = max(0.1, base_hg + (elo_diff * 0.001) + (att_diff * 0.015))
+        lambda_a = max(0.1, base_ag - (elo_diff * 0.001) - (def_diff * 0.015))
         
         matrix = np.zeros((self.max_goals, self.max_goals))
         for i in range(self.max_goals):
@@ -112,12 +97,8 @@ class PoissonEngine:
         away_win = np.triu(matrix, 1).sum()
         
         total = home_win + draw + away_win
-        
         return {
-            'home_win': home_win / total,
-            'draw': draw / total,
-            'away_win': away_win / total,
-            'matrix': matrix / total
+            'home_win': home_win / total, 'draw': draw / total, 'away_win': away_win / total, 'matrix': matrix / total
         }
 
     def get_smart_score(self, matrix, probs_ml=None):
@@ -131,25 +112,18 @@ class Backtester:
         self.loader = DataLoader()
         self.elo = EloSystem()
         self.poisson = PoissonEngine()
-        self.continent_map = {}
 
-    def _get_continent(self, team):
-        return self.continent_map.get(team, "Europe")
+    def _calc_weighted_form(self, form_list):
+        """Gewichteter Durchschnitt: Jüngstes Spiel zählt am meisten (Gewichte: 1, 2, 3, 4, 5)"""
+        if not form_list:
+            return 0.0
+        # Erzeugt dynamische Gewichte, je nachdem wie viele Spiele (max 5) in der Liste sind
+        weights = np.array([1, 2, 3, 4, 5][-len(form_list):])
+        return np.sum(np.array(form_list) * weights) / np.sum(weights)
 
     def _generate_historical_features(self, df, fifa_dict):
-        print("[Pipeline] Mapping globaler Kontinental-Strukturen...")
+        print("[Pipeline] Berechne mathematische Feature-Vektoren (mit Weighted Form)...")
         df = df.sort_values('date').reset_index(drop=True)
-        
-        for _, row in df.iterrows():
-            t = str(row.get('tournament', ''))
-            h, a = row['home_team'], row['away_team']
-            if 'Euro' in t: self.continent_map[h], self.continent_map[a] = 'Europe', 'Europe'
-            elif 'Copa' in t: self.continent_map[h], self.continent_map[a] = 'South America', 'South America'
-            elif 'African' in t or 'Africa' in t: self.continent_map[h], self.continent_map[a] = 'Africa', 'Africa'
-            elif 'Asian' in t or 'AFC' in t: self.continent_map[h], self.continent_map[a] = 'Asia', 'Asia'
-            elif 'CONCACAF' in t or 'Gold Cup' in t: self.continent_map[h], self.continent_map[a] = 'North America', 'North America'
-
-        print("[Pipeline] Berechne mathematische Feature-Vektoren (Poisson, Form, Kontinent-Vorteil)...")
         features = []
         team_form_tracker = {}
 
@@ -170,21 +144,10 @@ class Backtester:
             probs_p = self.poisson.predict_match_probabilities(team_h, team_a, bool(is_neutral), elo_diff, att_diff, def_diff)
             poisson_diff = probs_p['home_win'] - probs_p['away_win']
             
-            form_h = np.mean(team_form_tracker[team_h]) if team_h in team_form_tracker and team_form_tracker[team_h] else 0.0
-            form_a = np.mean(team_form_tracker[team_a]) if team_a in team_form_tracker and team_form_tracker[team_a] else 0.0
+            # --- DIE NEUE INTELLIGENTE FORM-BERECHNUNG ---
+            form_h = self._calc_weighted_form(team_form_tracker.get(team_h, []))
+            form_a = self._calc_weighted_form(team_form_tracker.get(team_a, []))
             form_diff = form_h - form_a
-            
-            t_name = str(row['tournament'])
-            if 'Euro' in t_name: t_cont = 'Europe'
-            elif 'Copa' in t_name: t_cont = 'South America'
-            elif 'African' in t_name or 'Africa' in t_name: t_cont = 'Africa'
-            elif 'Asian' in t_name or 'AFC' in t_name: t_cont = 'Asia'
-            elif 'Gold Cup' in t_name or 'CONCACAF' in t_name: t_cont = 'North America'
-            else: t_cont = self._get_continent(team_h) if not is_neutral else 'Other'
-                
-            adv_h = 1 if self._get_continent(team_h) == t_cont else 0
-            adv_a = 1 if self._get_continent(team_a) == t_cont else 0
-            continent_adv_diff = adv_h - adv_a
             
             if goals_h > goals_a: target = 2
             elif goals_h == goals_a: target = 1
@@ -204,7 +167,6 @@ class Backtester:
                 'def_diff': def_diff,
                 'poisson_diff': poisson_diff,
                 'form_diff': form_diff,
-                'continent_adv_diff': continent_adv_diff,
                 'outcome': target
             })
             
@@ -225,27 +187,24 @@ class Backtester:
         ]
         df_tradeable = df_features[df_features['tournament'].isin(major_tournaments)].copy()
         print(f"[Pipeline] Filter aktiv: {len(df_tradeable)} handelbare Major-Turnierspiele extrahiert.")
-        
         return df_tradeable
 
     def stresstest(self, model, df_features, initial_bankroll=10000.0, num_simulations=1000):
         print("\n" + "="*60)
         print("🎲 INITIATING MONTE CARLO RISK SIMULATION (SHARP BOOKMAKER PROXY)")
         print("="*60)
-        print(f"[Risk] Analysiere Trades gegen Pinnacle-Standard mit {num_simulations} permutierten Pfaden...")
         
         trades = []
-        
         for idx, row in df_features.iterrows():
             try:
                 if hasattr(model, 'predict_probabilities'):
                     probs = model.predict_probabilities(
                         row['elo_diff'], row['poisson_diff'], row['form_diff'], 
-                        row['continent_adv_diff'], row['att_diff'], row['mid_diff'], row['def_diff']
+                        row['att_diff'], row['mid_diff'], row['def_diff']
                     )
                     prob_a, prob_d, prob_h = probs['away_win'], probs['draw'], probs['home_win']
                 elif hasattr(model, 'predict_proba'):
-                    cols = ['elo_diff', 'poisson_diff', 'form_diff', 'continent_adv_diff', 'att_diff', 'mid_diff', 'def_diff']
+                    cols = ['elo_diff', 'poisson_diff', 'form_diff', 'att_diff', 'mid_diff', 'def_diff']
                     X = row[cols].to_frame().T
                     p = model.predict_proba(X)[0]
                     prob_a, prob_d, prob_h = p[0], p[1], p[2]
@@ -254,105 +213,62 @@ class Backtester:
             except Exception as e:
                 continue
 
-            # --- SHARP BOOKMAKER ALGORITHM ---
-            # 1. Base Elo Probability
             base_h = 1 / (1 + 10 ** ((-row['elo_diff']) / 400))
             base_a = 1 / (1 + 10 ** ((row['elo_diff']) / 400))
-            base_d = 1 - base_h - base_a
-            if base_d < 0.15: base_d = 0.15 # Minimum draw probability
+            base_d = max(0.15, 1 - base_h - base_a)
             
-            # 2. Sharp Adjustments (Der Buchmacher kennt Form, Poisson und Kontinent)
-            sharp_h = base_h + (row['poisson_diff'] * 0.15) + (row['form_diff'] * 0.05) + (row['continent_adv_diff'] * 0.03)
-            sharp_a = base_a - (row['poisson_diff'] * 0.15) - (row['form_diff'] * 0.05) - (row['continent_adv_diff'] * 0.03)
+            # Buchmacher nutzt jetzt auch unsere schlaue Form!
+            sharp_h = base_h + (row['poisson_diff'] * 0.15) + (row['form_diff'] * 0.08)
+            sharp_a = base_a - (row['poisson_diff'] * 0.15) - (row['form_diff'] * 0.08)
             
-            # Limits
             sharp_h = max(0.05, min(0.95, sharp_h))
             sharp_a = max(0.05, min(0.95, sharp_a))
             
-            # Normalisierung auf 100% Markt-Wahrscheinlichkeit
             sum_p = sharp_h + base_d + sharp_a
-            norm_h = sharp_h / sum_p
-            norm_a = sharp_a / sum_p
+            norm_h, norm_a = sharp_h / sum_p, sharp_a / sum_p
             
-            # 3. Pinnacle Marge (Vig) - Haarscharfe 3.5%
             pinnacle_vig = 1.035
-            odds_h = 1 / (norm_h * pinnacle_vig)
-            odds_a = 1 / (norm_a * pinnacle_vig)
-            # ---------------------------------
+            odds_h, odds_a = 1 / (norm_h * pinnacle_vig), 1 / (norm_a * pinnacle_vig)
             
             ai_pred = np.argmax([prob_a, prob_d, prob_h])
             outcome = row['outcome']
             
-            # Signal Home (Modell ist sicher UND findet einen Edge gegen den Sharp Bookmaker)
             if ai_pred == 2 and prob_h > 0.50: 
                 edge = prob_h - (1/odds_h)
                 if edge > 0:
-                    b = odds_h - 1
-                    q = 1 - prob_h
-                    k_fraction = ((prob_h * b - q) / b) * 0.25 # Quarter-Kelly
-                    k_fraction = min(max(k_fraction, 0), 0.03) # Hartes Cap: Max 3%
-                    won = (outcome == 2)
-                    trades.append({'stake_pct': k_fraction, 'odds': odds_h, 'won': won})
-                    
-            # Signal Away
+                    k_fraction = min(max(((prob_h * (odds_h - 1) - (1 - prob_h)) / (odds_h - 1)) * 0.25, 0), 0.03)
+                    trades.append({'stake_pct': k_fraction, 'odds': odds_h, 'won': (outcome == 2)})
             elif ai_pred == 0 and prob_a > 0.50: 
                 edge = prob_a - (1/odds_a)
                 if edge > 0:
-                    b = odds_a - 1
-                    q = 1 - prob_a
-                    k_fraction = ((prob_a * b - q) / b) * 0.25 # Quarter-Kelly
-                    k_fraction = min(max(k_fraction, 0), 0.03) # Hartes Cap: Max 3%
-                    won = (outcome == 0)
-                    trades.append({'stake_pct': k_fraction, 'odds': odds_a, 'won': won})
+                    k_fraction = min(max(((prob_a * (odds_a - 1) - (1 - prob_a)) / (odds_a - 1)) * 0.25, 0), 0.03)
+                    trades.append({'stake_pct': k_fraction, 'odds': odds_a, 'won': (outcome == 0)})
 
         if not trades:
-            print("[Risk] ⚠️ Keine Edges gegen Pinnacle-Proxy gefunden. Der Buchmacher war perfekt.")
+            print("[Risk] ⚠️ Keine Edges gegen Pinnacle-Proxy gefunden.")
             return
             
         print(f"[Risk] {len(trades)} Trades haben den Sharp Bookmaker Filter überlebt!")
-        print("[Risk] Starte Permutationen...")
         
-        # Monte Carlo Engine
-        results = []
-        max_drawdowns = []
-        bankruptcies = 0
-        
+        results, max_drawdowns, bankruptcies = [], [], 0
         for i in range(num_simulations):
             np.random.shuffle(trades) 
-            current_br = initial_bankroll
-            peak_br = initial_bankroll
-            max_dd = 0.0
-            
+            current_br, peak_br, max_dd = initial_bankroll, initial_bankroll, 0.0
             for t in trades:
                 stake = current_br * t['stake_pct']
-                if t['won']:
-                    current_br += stake * (t['odds'] - 1)
-                else:
-                    current_br -= stake
-                    
+                if t['won']: current_br += stake * (t['odds'] - 1)
+                else: current_br -= stake
                 if current_br > peak_br: peak_br = current_br
                 dd = (peak_br - current_br) / peak_br
                 if dd > max_dd: max_dd = dd
-                
                 if current_br < initial_bankroll * 0.1: 
                     bankruptcies += 1
                     break
-                    
             results.append(current_br)
             max_drawdowns.append(max_dd)
             
         avg_br = np.mean(results)
-        avg_dd = np.mean(max_drawdowns)
-        max_dd_overall = np.max(max_drawdowns)
-        risk_of_ruin = (bankruptcies / num_simulations) * 100
         roi = ((avg_br - initial_bankroll) / initial_bankroll) * 100
         
-        print("\n📊 MONTE CARLO RESULTATE (SHARP PROXY)")
-        print(f"➜ Startkapital:        {initial_bankroll:,.2f} €")
-        print(f"➜ Erwartungswert:      {avg_br:,.2f} € (ROI: {roi:+.1f}%)")
-        print(f"➜ Durchschn. Drawdown: -{avg_dd*100:.1f}%")
-        print(f"➜ Worst-Case Drawdown: -{max_dd_overall*100:.1f}%")
-        print(f"➜ Risk of Ruin:        {risk_of_ruin:.2f}% (Gefahr des Totalverlusts)")
-        print("============================================================\n")
-        
-        return {'roi': roi, 'max_drawdown': max_dd_overall, 'risk_of_ruin': risk_of_ruin}
+        print(f"\n📊 MONTE CARLO RESULTATE (SHARP PROXY)\n➜ Startkapital: {initial_bankroll:,.2f} €\n➜ Erwartungswert: {avg_br:,.2f} € (ROI: {roi:+.1f}%)\n➜ Worst-Case Drawdown: -{np.max(max_drawdowns)*100:.1f}%\n")
+        return {'roi': roi, 'max_drawdown': np.max(max_drawdowns), 'risk_of_ruin': (bankruptcies / num_simulations) * 100}

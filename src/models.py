@@ -109,8 +109,8 @@ class MetaMachineLearningModel:
         self.model = None
         self.scaler = StandardScaler()
         self.is_trained = False
-        # NEU: 7 Features! Der alte 'squad_diff' wurde in ATT, MID, DEF aufgespalten
-        self.feature_names = ['elo_diff', 'poisson_diff', 'form_diff', 'continent_adv_diff', 'att_diff', 'mid_diff', 'def_diff']
+        # NEU: 6 Features! Der alte 'squad_diff' wurde in ATT, MID, DEF aufgespalten
+        self.feature_names = ['elo_diff', 'poisson_diff', 'form_diff', 'att_diff', 'mid_diff', 'def_diff']
         self.best_params = {}
 
     def train(self, df_features: pd.DataFrame):
@@ -139,11 +139,11 @@ class MetaMachineLearningModel:
         self.best_params = grid_search.best_params_
         self.is_trained = True
 
-    def predict_probabilities(self, elo_diff: float, poisson_diff: float, form_diff: float, continent_adv_diff: float, att_diff: float, mid_diff: float, def_diff: float) -> dict:
+    def predict_probabilities(self, elo_diff: float, poisson_diff: float, form_diff: float, att_diff: float, mid_diff: float, def_diff: float) -> dict:
         if not self.is_trained:
             raise RuntimeError("Modell muss trainiert werden!")
             
-        X_pred = pd.DataFrame([[elo_diff, poisson_diff, form_diff, continent_adv_diff, att_diff, mid_diff, def_diff]], columns=self.feature_names)
+        X_pred = pd.DataFrame([[elo_diff, poisson_diff, form_diff, att_diff, mid_diff, def_diff]], columns=self.feature_names)
         X_pred_scaled = self.scaler.transform(X_pred)
         probs = self.model.predict_proba(X_pred_scaled)[0]
         

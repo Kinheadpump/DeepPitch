@@ -147,7 +147,7 @@ with tab1:
                     att_diff, mid_diff, def_diff = stats_h['ATT'] - stats_a['ATT'], stats_h['MID'] - stats_a['MID'], stats_h['DEF'] - stats_a['DEF']
                     
                     probs_p = bt.poisson.predict_match_probabilities(team_h, team_a, True, elo_diff=elo_diff, att_diff=att_diff, def_diff=def_diff)
-                    probs_ml = model.predict_probabilities(elo_diff, probs_p['home_win'] - probs_p['away_win'], 0.0, 0.0, att_diff, mid_diff, def_diff)
+                    probs_ml = model.predict_probabilities(elo_diff, probs_p['home_win'] - probs_p['away_win'], 0.0, att_diff, mid_diff, def_diff)
                     pred_h, pred_a = bt.poisson.get_smart_score(probs_p['matrix'], probs_ml)
                     
                     with st.container(border=True):
@@ -198,7 +198,6 @@ with tab2:
         with st.container(border=True):
             st.markdown("**Environment Constraints**")
             is_neutral = st.checkbox("Neutraler Austragungsort", value=True)
-            wm_continent = st.selectbox("Turnier-Kontinent", ['Europe', 'South America', 'Asia', 'Africa', 'North America'])
             form_diff = st.slider("Form-Momentum Delta", -1.0, 1.0, 0.0, step=0.1)
 
     with col_output:
@@ -210,7 +209,6 @@ with tab2:
             elo_h = bt.elo.ratings.get(team_h, 1500.0)
             elo_a = bt.elo.ratings.get(team_a, 1500.0)
             elo_diff = elo_h - elo_a
-            continent_diff = (1 if bt._get_continent(team_h) == wm_continent else 0) - (1 if bt._get_continent(team_a) == wm_continent else 0)
             
             # --- LIVE LINEUP OVERRIDE ---
             if use_live_lineup:
@@ -231,7 +229,7 @@ with tab2:
             att_diff, mid_diff, def_diff = stats_h['ATT'] - stats_a['ATT'], stats_h['MID'] - stats_a['MID'], stats_h['DEF'] - stats_a['DEF']
             
             probs_p = bt.poisson.predict_match_probabilities(team_h, team_a, is_neutral, elo_diff=elo_diff, att_diff=att_diff, def_diff=def_diff)
-            probs_ml = model.predict_probabilities(elo_diff, probs_p['home_win'] - probs_p['away_win'], form_diff, continent_diff, att_diff, mid_diff, def_diff)
+            probs_ml = model.predict_probabilities(elo_diff, probs_p['home_win'] - probs_p['away_win'], form_diff, att_diff, mid_diff, def_diff)
             pred_h, pred_a = bt.poisson.get_smart_score(probs_p['matrix'], probs_ml)
             
             with st.container(border=True):
