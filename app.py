@@ -5,6 +5,25 @@ import joblib
 import os
 from src.api_client import LiveOracleAPI
 from src.lineup_scanner import LiveLineupScanner
+import difflib
+
+def get_real_team_name(api_name, known_teams):
+    """Übersetzt API-Teamnamen unscharf in die korrekten Datenbank-Schlüssel"""
+    # 1. Harte manuelle Zuordnungen für bekannte API-Sonderfälle
+    manual_map = {
+        "USA": "United States",
+        "Korea Republic": "South Korea",
+        "Cote d'Ivoire": "Ivory Coast",
+        "Bosnia and Herzegovina": "Bosnia",
+        "IR Iran": "Iran",
+        "North Macedonia": "Macedonia"
+    }
+    if api_name in manual_map:
+        return manual_map[api_name]
+        
+    # 2. Unscharfe Suche (Fuzzy Matching) für leichte Schreibfehler
+    matches = difflib.get_close_matches(api_name, known_teams, n=1, cutoff=0.55)
+    return matches[0] if matches else api_name
 
 # 1. PAGE CONFIGURATION (Clean & Professional)
 st.set_page_config(page_title="DeepPitch Analytics", layout="wide", initial_sidebar_state="expanded")
@@ -136,8 +155,14 @@ with tab1:
             if not matches:
                 st.info("Keine handelbaren Events im definierten Zeitfenster gefunden.")
             else:
+                db_teams = list(fifa_ratings.keys()) # Alle bekannten Datenbank-Teams laden
+                
                 for match in matches:
-                    team_h, team_a = match['home_team'], match['away_team']
+                    # --- FIX: Namen vor der Bewertung übersetzen! ---
+                    raw_h, raw_a = match['home_team'], match['away_team']
+                    team_h = get_real_team_name(raw_h, db_teams)
+                    team_a = get_real_team_name(raw_a, db_teams)
+                    # -----------------------------------------------
                     
                     stats_h = fifa_ratings.get(team_h, bt.FALLBACK_RATING)
                     stats_a = fifa_ratings.get(team_a, bt.FALLBACK_RATING)
