@@ -313,15 +313,13 @@ with tab3:
         # --- NEU: Die Erklärungen im ausklappbaren Menü ---
         with st.expander("📚 Was bedeuten diese Faktoren genau?"):
             st.markdown("""
-            * **Poisson (Tore):** Die reine Mathematik. Berechnet die stochastische Wahrscheinlichkeit für die genaue Anzahl an Toren, basierend auf der jüngsten offensiven und defensiven Stärke beider Teams. Oft der stärkste Prädiktor.
-            * **Elo Differenz:** Das historische Langzeit-Gedächtnis. Das Elo-Rating bewertet die generelle "Klasse" einer Nation über Jahre hinweg. Ein massiver Unterschied hier schützt vor falschen Favoriten.
-            * **Mittelfeld (FIFA):** Der Maschinenraum des Spiels. Ein dominantes Mittelfeld kontrolliert den Ballbesitz und diktiert das Tempo. Die KI hat gelernt, dass Spiele meistens hier gewonnen oder verloren werden.
-            * **Angriff (FIFA):** Die Qualität der Stürmer. Wie wahrscheinlich ist es, dass eine erspielte Chance auch wirklich verwandelt wird?
-            * **Abwehr (FIFA):** Die defensive Mauer. Die individuelle Klasse von Torwart und Verteidigern, um gegnerische Angriffe im Eins-gegen-Eins zu stoppen.
-            * **Form Momentum:** Der "Hot-Streak"-Faktor. Ein exponentiell gewichtetes Rating der letzten 5 Spiele (das letzte Spiel zählt am meisten). Bricht den Tie-Breaker, wenn zwei gleich starke Teams aufeinandertreffen.
+            * **Poisson (Tore):** Berechnet die stochastische Wahrscheinlichkeit für die genaue Anzahl an Toren, basierend auf der jüngsten offensiven und defensiven Stärke beider Teams.
+            * **Elo Differenz:** Das Elo-Rating bewertet die generelle "Klasse" einer Nation über Jahre hinweg.
+            * **Mittelfeld (FIFA):** Die Relevanz eines guten Mittelfeldes
+            * **Angriff (FIFA):** Die Qualität der Stürmer. 
+            * **Abwehr (FIFA):** Die individuelle Klasse von Torwart und Verteidigern, um gegnerische Angriffe im Eins-gegen-Eins zu stoppen.
+            * **Form Momentum:** Der "Hot-Streak"-Faktor. Ein exponentiell gewichtetes Rating der letzten 5 Spiele.
             """)
-        
-        st.info("💡 **Analyse:** Wie zu erwarten, dominiert das stochastische Modell (Poisson), gefolgt von der historischen Stärke (Elo) und der Dominanz im Mittelfeld.")
     else:
         st.error(f"Feature Importance konnte nicht geladen werden. Aktueller Modell-Typ: {type(rf_model).__name__}")
 
