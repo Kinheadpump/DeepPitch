@@ -78,7 +78,7 @@ class EloSystem:
 
 class PoissonEngine:
     def __init__(self):
-        self.max_goals = 10
+        self.max_goals = 10  # Erhöht auf 10 für extreme Mismatches (Tail-Risk Protection)
 
     def predict_match_probabilities(self, team_h, team_a, is_neutral, elo_diff, att_diff, def_diff):
         base_hg = 1.3
@@ -102,8 +102,18 @@ class PoissonEngine:
         }
 
     def get_smart_score(self, matrix, probs_ml=None):
+        """
+        Nutzt die ML-Tendenz, um ein realistisches, tendenzkonformes 
+        Ergebnis statt der reinen mathematischen Modal-Zelle zu erzeugen.
+        """
         flat_idx = np.argmax(matrix)
         goals_h, goals_a = np.unravel_index(flat_idx, matrix.shape)
+        
+        if probs_ml and probs_ml['home_win'] > 0.55 and goals_h == goals_a:
+            return int(goals_h + 1), int(goals_a)
+        elif probs_ml and probs_ml['away_win'] > 0.55 and goals_h == goals_a:
+            return int(goals_h), int(goals_a + 1)
+            
         return int(goals_h), int(goals_a)
 
 class Backtester:
@@ -114,10 +124,8 @@ class Backtester:
         self.poisson = PoissonEngine()
 
     def _calc_weighted_form(self, form_list):
-        """Gewichteter Durchschnitt: Jüngstes Spiel zählt am meisten (Gewichte: 1, 2, 3, 4, 5)"""
         if not form_list:
             return 0.0
-        # Erzeugt dynamische Gewichte, je nachdem wie viele Spiele (max 5) in der Liste sind
         weights = np.array([1, 2, 3, 4, 5][-len(form_list):])
         return np.sum(np.array(form_list) * weights) / np.sum(weights)
 
@@ -128,6 +136,10 @@ class Backtester:
         team_form_tracker = {}
 
         for _, row in df.iterrows():
+            # --- NEUER FIX: Ignoriere Spiele ohne echtes Ergebnis (Zukunft oder Abbruch) ---
+            if pd.isna(row['home_score']) or pd.isna(row['away_score']):
+                continue
+                
             team_h, team_a = row['home_team'], row['away_team']
             goals_h, goals_a = row['home_score'], row['away_score']
             is_neutral = int(row['neutral'])
@@ -144,7 +156,6 @@ class Backtester:
             probs_p = self.poisson.predict_match_probabilities(team_h, team_a, bool(is_neutral), elo_diff, att_diff, def_diff)
             poisson_diff = probs_p['home_win'] - probs_p['away_win']
             
-            # --- DIE NEUE INTELLIGENTE FORM-BERECHNUNG ---
             form_h = self._calc_weighted_form(team_form_tracker.get(team_h, []))
             form_a = self._calc_weighted_form(team_form_tracker.get(team_a, []))
             form_diff = form_h - form_a
@@ -158,6 +169,8 @@ class Backtester:
                 'tournament': row['tournament'],
                 'home_team': team_h,
                 'away_team': team_a,
+                'home_score': goals_h,  # <--- Echtes Ergebnis gesichert
+                'away_score': goals_a,  # <--- Echtes Ergebnis gesichert
                 'is_neutral': is_neutral,
                 'elo_h': elo_h,
                 'elo_a': elo_a,
@@ -191,10 +204,14 @@ class Backtester:
 
     def stresstest(self, model, df_features, initial_bankroll=10000.0, num_simulations=1000):
         print("\n" + "="*60)
-        print("🎲 INITIATING MONTE CARLO RISK SIMULATION (SHARP BOOKMAKER PROXY)")
+        print("🎲 INITIATING MONTE CARLO RISK & ACCURACY AUDIT")
         print("="*60)
         
         trades = []
+        exact_hits = 0
+        near_misses = 0
+        total_traded_matches = 0
+        
         for idx, row in df_features.iterrows():
             try:
                 if hasattr(model, 'predict_probabilities'):
@@ -210,19 +227,15 @@ class Backtester:
                     prob_a, prob_d, prob_h = p[0], p[1], p[2]
                 else:
                     return
-            except Exception as e:
+            except Exception:
                 continue
 
             base_h = 1 / (1 + 10 ** ((-row['elo_diff']) / 400))
             base_a = 1 / (1 + 10 ** ((row['elo_diff']) / 400))
             base_d = max(0.15, 1 - base_h - base_a)
             
-            # Buchmacher nutzt jetzt auch unsere schlaue Form!
-            sharp_h = base_h + (row['poisson_diff'] * 0.15) + (row['form_diff'] * 0.08)
-            sharp_a = base_a - (row['poisson_diff'] * 0.15) - (row['form_diff'] * 0.08)
-            
-            sharp_h = max(0.05, min(0.95, sharp_h))
-            sharp_a = max(0.05, min(0.95, sharp_a))
+            sharp_h = max(0.05, min(0.95, base_h + (row['poisson_diff'] * 0.15) + (row['form_diff'] * 0.08)))
+            sharp_a = max(0.05, min(0.95, base_a - (row['poisson_diff'] * 0.15) - (row['form_diff'] * 0.08)))
             
             sum_p = sharp_h + base_d + sharp_a
             norm_h, norm_a = sharp_h / sum_p, sharp_a / sum_p
@@ -233,22 +246,44 @@ class Backtester:
             ai_pred = np.argmax([prob_a, prob_d, prob_h])
             outcome = row['outcome']
             
-            if ai_pred == 2 and prob_h > 0.50: 
-                edge = prob_h - (1/odds_h)
-                if edge > 0:
-                    k_fraction = min(max(((prob_h * (odds_h - 1) - (1 - prob_h)) / (odds_h - 1)) * 0.25, 0), 0.03)
-                    trades.append({'stake_pct': k_fraction, 'odds': odds_h, 'won': (outcome == 2)})
-            elif ai_pred == 0 and prob_a > 0.50: 
-                edge = prob_a - (1/odds_a)
-                if edge > 0:
-                    k_fraction = min(max(((prob_a * (odds_a - 1) - (1 - prob_a)) / (odds_a - 1)) * 0.25, 0), 0.03)
-                    trades.append({'stake_pct': k_fraction, 'odds': odds_a, 'won': (outcome == 0)})
+            is_trade = False
+            chosen_odds = 0.0
+            is_win = False
+            
+            if ai_pred == 2 and prob_h > 0.50 and (prob_h - (1/odds_h)) > 0:
+                k_fraction = min(max(((prob_h * (odds_h - 1) - (1 - prob_h)) / (odds_h - 1)) * 0.25, 0), 0.03)
+                chosen_odds = odds_h
+                is_win = (outcome == 2)
+                is_trade = True
+            elif ai_pred == 0 and prob_a > 0.50 and (prob_a - (1/odds_a)) > 0:
+                k_fraction = min(max(((prob_a * (odds_a - 1) - (1 - prob_a)) / (odds_a - 1)) * 0.25, 0), 0.03)
+                chosen_odds = odds_a
+                is_win = (outcome == 0)
+                is_trade = True
+
+            if is_trade:
+                total_traded_matches += 1
+                trades.append({'stake_pct': k_fraction, 'odds': chosen_odds, 'won': is_win})
+                
+                probs_p = self.poisson.predict_match_probabilities(
+                    row['home_team'], row['away_team'], bool(row['is_neutral']), 
+                    row['elo_diff'], row['att_diff'], row['def_diff']
+                )
+                pred_h, pred_a = self.poisson.get_smart_score(probs_p['matrix'], {'home_win': prob_h, 'draw': prob_d, 'away_win': prob_a})
+                
+                actual_h = int(row['home_score'])
+                actual_a = int(row['away_score'])
+                
+                if pred_h == actual_h and pred_a == actual_a:
+                    exact_hits += 1
+                elif (abs(pred_h - actual_h) + abs(pred_a - actual_a)) == 1:
+                    near_misses += 1
 
         if not trades:
             print("[Risk] ⚠️ Keine Edges gegen Pinnacle-Proxy gefunden.")
             return
             
-        print(f"[Risk] {len(trades)} Trades haben den Sharp Bookmaker Filter überlebt!")
+        print(f"[Risk] {len(trades)} Trades analysiert.")
         
         results, max_drawdowns, bankruptcies = [], [], 0
         for i in range(num_simulations):
@@ -270,5 +305,14 @@ class Backtester:
         avg_br = np.mean(results)
         roi = ((avg_br - initial_bankroll) / initial_bankroll) * 100
         
-        print(f"\n📊 MONTE CARLO RESULTATE (SHARP PROXY)\n➜ Startkapital: {initial_bankroll:,.2f} €\n➜ Erwartungswert: {avg_br:,.2f} € (ROI: {roi:+.1f}%)\n➜ Worst-Case Drawdown: -{np.max(max_drawdowns)*100:.1f}%\n")
+        hit_rate_exact = (exact_hits / total_traded_matches) * 100 if total_traded_matches > 0 else 0
+        hit_rate_near = (near_misses / total_traded_matches) * 100 if total_traded_matches > 0 else 0
+        
+        print(f"\n📊 SCOUTING & ACCURACY AUDIT ({total_traded_matches} gesetzte Spiele)")
+        print(f"🎯 Exakte Ergebnistreffer:   {exact_hits} ({hit_rate_exact:.1f}%)")
+        print(f"🥈 Nur 1 Tor daneben:        {near_misses} ({hit_rate_near:.1f}%)")
+        print(f"📈 Summe (Präzisions-Fokus): {exact_hits + near_misses} ({(hit_rate_exact + hit_rate_near):.1f}%)")
+        print("-" * 60)
+        print(f"📊 FINANCIAL PERFORMANCE\n➜ Erwartungswert: {avg_br:,.2f} € (ROI: {roi:+.1f}%)\n➜ Worst-Case Drawdown: -{np.max(max_drawdowns)*100:.1f}%\n")
+        
         return {'roi': roi, 'max_drawdown': np.max(max_drawdowns), 'risk_of_ruin': (bankruptcies / num_simulations) * 100}
