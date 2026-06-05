@@ -26,3 +26,5 @@ env/
 # 4. Betriebssystem-Müll
 .DS_Store
 Thumbs.db
+
+.streamlit/

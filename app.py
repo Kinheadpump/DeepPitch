@@ -4,6 +4,7 @@ import numpy as np
 import joblib
 import os
 from src.api_client import LiveOracleAPI
+from src.lineup_scanner import LiveLineupScanner
 
 st.set_page_config(page_title="DeepPitch V5 - Orakel", page_icon="🔮", layout="wide")
 
@@ -14,14 +15,22 @@ st.set_page_config(page_title="DeepPitch V5 - Orakel", page_icon="🔮", layout=
 def initialize_engine():
     brain_path = "data/deeppitch_brain.pkl"
     if not os.path.exists(brain_path):
-        st.error("🧠 **Gehirn nicht gefunden!** Bitte führe zuerst `python train.py` aus.")
+        st.error("🧠 Gehirn nicht gefunden! Bitte führe zuerst `python train.py` aus.")
         st.stop()
         
     brain = joblib.load(brain_path)
-    # API-Key hier eintragen, wenn du Live-Daten für echte Spiele willst!
-    api = LiveOracleAPI(api_key="DEMO") 
+    try:
+        my_api_key = st.secrets["FOOTBALL_DATA_KEY"]
+    except FileNotFoundError:
+        st.warning("⚠️ API-Key nicht gefunden! Nutze Fallback-Modus.")
+        my_api_key = "DEMO"
+        
+    api = LiveOracleAPI(api_key=my_api_key)
     
-    return brain['backtester'], brain['model'], brain['fifa'], api
+    # NEU: Wir laden den 1.2 GB Scanner in den RAM (dauert beim ersten Start 2-3 Sekunden)
+    scanner = LiveLineupScanner(fifa_csv_path="data/fifa_players.csv")
+    
+    return brain['backtester'], brain['model'], brain['fifa'], api, scanner
 
 # ==========================================
 # 2. FINANCIAL ADVISOR WIDGET (JETZT MIT LIVE-QUOTEN)
@@ -90,7 +99,7 @@ st.title("🏆 DeepPitch V5: Das Live-Orakel")
 st.markdown("Willkommen im Cockpit. Nutze die KI, um Ineffizienzen in den Buchmacher-Quoten aufzuspüren.")
 
 with st.spinner("Lade KI-Gedächtnis..."):
-    bt, model, fifa_ratings, api = initialize_engine()
+    bt, model, fifa_ratings, api, scanner = initialize_engine()
 
 tab1, tab2 = st.tabs(["🔴 LIVE: Kommende Spiele", "🔬 Manuelle Analyse (Labor)"])
 
@@ -154,6 +163,12 @@ with tab2:
         team_h = st.selectbox("Heimteam (Team A)", all_teams, index=all_teams.index("Germany") if "Germany" in all_teams else 0)
         team_a = st.selectbox("Auswärtsteam (Team B)", all_teams, index=all_teams.index("Spain") if "Spain" in all_teams else 1)
         
+        # --- NEU: LIVE LINEUP SCANNER ---
+        st.markdown("#### 📡 Live-Startelf Scanner")
+        st.caption("Prüft die offiziellen Aufstellungen 60 Min vor Anpfiff.")
+        use_live_lineup = st.checkbox(f"🚨 Ausfall-Szenario für {team_h} simulieren", help="Überschreibt die historischen FIFA-Ratings mit den Werten der 11 Spieler, die laut API WIRKLICH auf dem Platz stehen.")
+        # --------------------------------
+        
         st.divider()
         st.markdown("#### 2. Rahmenbedingungen")
         is_neutral = st.checkbox(
@@ -189,6 +204,22 @@ with tab2:
         if team_h != team_a:
             stats_h = fifa_ratings.get(team_h, bt.FALLBACK_RATING)
             stats_a = fifa_ratings.get(team_a, bt.FALLBACK_RATING)
+            
+            # --- NEU: LIVE LINEUP ÜBERSCHREIBEN ---
+            if use_live_lineup:
+                with st.spinner("Fuzzy Matching der Live-Aufstellung..."):
+                    live_stats_h, match_logs = scanner.get_live_squad_rating(team_h)
+                    
+                    if live_stats_h:
+                        st.warning(f"⚠️ **ACHTUNG: {team_h} spielt mit B-Elf!**\nHistorisches Rating ({stats_h['ATT']:.1f}) wurde durch Live-Aufstellung ({live_stats_h['ATT']:.1f}) überschrieben.")
+                        stats_h = live_stats_h # HIER ÜBERSCHREIBEN WIR DIE THEORIE MIT DER REALITÄT!
+                        
+                        with st.expander("🔍 Fuzzy Matcher Logs ansehen"):
+                            for log in match_logs:
+                                st.text(log)
+                    else:
+                        st.error("API hat keine Live-Daten für dieses Team (Demo funktioniert nur für 'Germany').")
+            # ---------------------------------------
             elo_h = bt.elo.ratings.get(team_h, 1500.0)
             elo_a = bt.elo.ratings.get(team_a, 1500.0)
             elo_diff = elo_h - elo_a
