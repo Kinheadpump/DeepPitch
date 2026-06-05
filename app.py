@@ -310,8 +310,6 @@ with tab3:
         df_plot = df_imp.set_index("Faktor")
         st.bar_chart(df_plot, color="#1f77b4")   
         
-        st.bar_chart(df_imp.set_index("Faktor"), color="#1f77b4")
-        
         # --- NEU: Die Erklärungen im ausklappbaren Menü ---
         with st.expander("📚 Was bedeuten diese Faktoren genau?"):
             st.markdown("""
