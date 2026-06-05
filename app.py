@@ -42,9 +42,15 @@ st.markdown("""
 with st.sidebar:
     st.markdown("### Methodik & Glossar")
     st.markdown("""
-    **Expected Value (Edge):** Die positive mathematische Differenz zwischen der vom DeepPitch-Modell berechneten Wahrscheinlichkeit und der vom Markt (Buchmacher) implizierten Wahrscheinlichkeit.
+    **Model Implied Prob. (Implizite Modell-Wahrscheinlichkeit):** Die rohe, ungeschönte Wahrscheinlichkeit, die die DeepPitch-KI für den Spielausgang berechnet. Sie basiert auf dem Ensemble aus Tor-Verteilungen (Poisson), Kadertiefe (FIFA-Daten), Form-Momentum und historischer Spielstärke (Elo).
+
+    **Simulated Odds / Market Odds (Markt-Quoten):** Der Preis, den der Buchmacher für ein Ereignis zahlt. 
+    * *Live Markets:* Hier zieht die App die echten, aktuellen Quoten aus der API.
+    * *Simulated:* Hier erschafft das System einen künstlichen "Sharp Bookmaker" (Pinnacle-Proxy), der extrem schlaue Quoten mit einer harten Marge von 3,5 % (Vig) simuliert, um das Modell unter härtesten Bedingungen zu testen.
+
+    **Expected Value / Edge (Erwartungswert / Vorteil):** Der mathematische Vorteil gegenüber dem Markt. Ein Edge entsteht nur dann, wenn die *Model Implied Prob.* höher ist als die Wahrscheinlichkeit, die der Buchmacher in seiner Quote versteckt hat. (Bsp: Quote 2.0 impliziert 50 %. Sagt das Modell 55 %, hast du 5 % Edge). Negative Edges werden vom System blockiert (NEUTRAL).
     
-    **Target Allocation:** Eine konservativ skalierte Risiko-Gewichtung (**Quarter-Kelly Criterion**) basierend auf dem detektierten Edge. Das System schützt das Kapital durch ein hartes Cap von maximal **3% der Bankroll** pro Trade.
+    **Target Allocation (Risk-Adjusted):** Eine konservativ skalierte Risiko-Gewichtung (**Quarter-Kelly Criterion**) basierend auf der Größe deines Bankrolls und dem detektierten Edge. Das System schützt das Kapital durch ein hartes Limit (Cap) von maximal **3 % der Bankroll** pro Trade.
     """)
 
 # ==========================================
@@ -132,70 +138,18 @@ st.markdown("Quantitative Match Analysis & Market Pricing Engine")
 
 bt, model, fifa_ratings, api, scanner = initialize_engine()
 
-tab1, tab2 = st.tabs(["Live Markets", "Quantitative Sandbox"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🧪 Labor & Sandbox", 
+    "📡 Live-Markt Scanner", 
+    "📊 KI-Architektur", 
+    "🏆 WM 2026 Orakel"
+])
 
 # ---------------------------------------------------------
-# TAB 1: LIVE-ORAKEL MODUS
+# TAB 1: MANUELLE ANALYSE (LABOR)
 # ---------------------------------------------------------
 with tab1:
-    col_header, col_action = st.columns([3, 1])
-    with col_header:
-        st.markdown("#### Upcoming Market Events")
-        st.caption("Scannt API-Endpoints nach regulären Länderspielen der nächsten 10 Tage.")
-    with col_action:
-        bankroll_live = st.number_input("Portfolio Size (€)", min_value=10, value=1000, step=100, key="bk_live")
-        fetch_button = st.button("Marktdaten abrufen", use_container_width=True)
-
-    st.divider()
-
-    if fetch_button:
-        with st.spinner("Synchronisiere mit Provider..."):
-            matches = api.get_upcoming_matches(days_ahead=10)
-            
-            if not matches:
-                st.info("Keine handelbaren Events im definierten Zeitfenster gefunden.")
-            else:
-                db_teams = list(fifa_ratings.keys()) # Alle bekannten Datenbank-Teams laden
-                
-                for match in matches:
-                    # --- FIX: Namen vor der Bewertung übersetzen! ---
-                    raw_h, raw_a = match['home_team'], match['away_team']
-                    team_h = get_real_team_name(raw_h, db_teams)
-                    team_a = get_real_team_name(raw_a, db_teams)
-                    # -----------------------------------------------
-                    
-                    stats_h = fifa_ratings.get(team_h, bt.FALLBACK_RATING)
-                    stats_a = fifa_ratings.get(team_a, bt.FALLBACK_RATING)
-                    elo_h = bt.elo.ratings.get(team_h, 1500.0)
-                    elo_a = bt.elo.ratings.get(team_a, 1500.0)
-                    elo_diff = elo_h - elo_a
-                    att_diff, mid_diff, def_diff = stats_h['ATT'] - stats_a['ATT'], stats_h['MID'] - stats_a['MID'], stats_h['DEF'] - stats_a['DEF']
-                    
-                    probs_p = bt.poisson.predict_match_probabilities(team_h, team_a, True, elo_diff=elo_diff, att_diff=att_diff, def_diff=def_diff)
-                    probs_ml = model.predict_probabilities(elo_diff, probs_p['home_win'] - probs_p['away_win'], 0.0, att_diff, mid_diff, def_diff)
-                    pred_h, pred_a = bt.poisson.get_smart_score(probs_p['matrix'], probs_ml)
-                    
-                    with st.container(border=True):
-                        c_match, c_metrics, c_kelly = st.columns([1, 1.5, 2])
-                        
-                        with c_match:
-                            st.markdown(f"**{team_h} vs. {team_a}**")
-                            st.caption(f"{match['date']} | {match['competition']}")
-                            st.markdown(f"Projiziertes Modal-Ergebnis: **{pred_h} - {pred_a}**")
-                        
-                        with c_metrics:
-                            cm1, cm2, cm3 = st.columns(3)
-                            cm1.metric(team_h, f"{probs_ml['home_win']*100:.1f}%")
-                            cm2.metric("Draw", f"{probs_ml['draw']*100:.1f}%")
-                            cm3.metric(team_a, f"{probs_ml['away_win']*100:.1f}%")
-                        
-                        with c_kelly:
-                            render_kelly_advisor(bankroll_live, probs_ml, elo_h, elo_a, team_h, team_a)
-
-# ---------------------------------------------------------
-# TAB 2: MANUELLE ANALYSE (LABOR)
-# ---------------------------------------------------------
-with tab2:
+    st.header("🧪 Labor & Sandbox")
     col_input, col_output = st.columns([1.2, 1], gap="large")
 
     with col_input:
@@ -269,3 +223,119 @@ with tab2:
             with st.container(border=True):
                 live_odds_dict = {2: real_odds_h, 1: real_odds_d, 0: real_odds_a}
                 render_kelly_advisor(bankroll_manual, probs_ml, elo_h, elo_a, team_h, team_a, live_odds=live_odds_dict)
+
+# ---------------------------------------------------------
+# TAB 2: LIVE-ORAKEL MODUS
+# ---------------------------------------------------------
+with tab2:
+    st.header("📡 Live-Markt Scanner")
+    col_header, col_action = st.columns([3, 1])
+    with col_header:
+        st.markdown("#### Upcoming Market Events")
+        st.caption("Scannt API-Endpoints nach regulären Länderspielen der nächsten 10 Tage.")
+    with col_action:
+        bankroll_live = st.number_input("Portfolio Size (€)", min_value=10, value=1000, step=100, key="bk_live")
+        fetch_button = st.button("Marktdaten abrufen", use_container_width=True)
+
+    st.divider()
+
+    if fetch_button:
+        with st.spinner("Synchronisiere mit Provider..."):
+            matches = api.get_upcoming_matches(days_ahead=10)
+            
+            if not matches:
+                st.info("Keine handelbaren Events im definierten Zeitfenster gefunden.")
+            else:
+                db_teams = list(fifa_ratings.keys()) # Alle bekannten Datenbank-Teams laden
+                
+                for match in matches:
+                    # --- FIX: Namen vor der Bewertung übersetzen! ---
+                    raw_h, raw_a = match['home_team'], match['away_team']
+                    team_h = get_real_team_name(raw_h, db_teams)
+                    team_a = get_real_team_name(raw_a, db_teams)
+                    # -----------------------------------------------
+                    
+                    stats_h = fifa_ratings.get(team_h, bt.FALLBACK_RATING)
+                    stats_a = fifa_ratings.get(team_a, bt.FALLBACK_RATING)
+                    elo_h = bt.elo.ratings.get(team_h, 1500.0)
+                    elo_a = bt.elo.ratings.get(team_a, 1500.0)
+                    elo_diff = elo_h - elo_a
+                    att_diff, mid_diff, def_diff = stats_h['ATT'] - stats_a['ATT'], stats_h['MID'] - stats_a['MID'], stats_h['DEF'] - stats_a['DEF']
+                    
+                    probs_p = bt.poisson.predict_match_probabilities(team_h, team_a, True, elo_diff=elo_diff, att_diff=att_diff, def_diff=def_diff)
+                    probs_ml = model.predict_probabilities(elo_diff, probs_p['home_win'] - probs_p['away_win'], 0.0, att_diff, mid_diff, def_diff)
+                    pred_h, pred_a = bt.poisson.get_smart_score(probs_p['matrix'], probs_ml)
+                    
+                    with st.container(border=True):
+                        c_match, c_metrics, c_kelly = st.columns([1, 1.5, 2])
+                        
+                        with c_match:
+                            st.markdown(f"**{team_h} vs. {team_a}**")
+                            st.caption(f"{match['date']} | {match['competition']}")
+                            st.markdown(f"Projiziertes Modal-Ergebnis: **{pred_h} - {pred_a}**")
+                        
+                        with c_metrics:
+                            cm1, cm2, cm3 = st.columns(3)
+                            cm1.metric(team_h, f"{probs_ml['home_win']*100:.1f}%")
+                            cm2.metric("Draw", f"{probs_ml['draw']*100:.1f}%")
+                            cm3.metric(team_a, f"{probs_ml['away_win']*100:.1f}%")
+                        
+                        with c_kelly:
+                            render_kelly_advisor(bankroll_live, probs_ml, elo_h, elo_a, team_h, team_a)
+
+# ------------------------------------------
+# TAB 3: FEATURE ANALYTICS (NEU)
+# ------------------------------------------
+with tab3:
+    st.header("🧠 Feature Importance (Gehirn-Scan)")
+    st.markdown("Diese Live-Analyse zeigt direkt aus dem neuronalen Netz, wie stark die KI verschiedene Datenpunkte gewichtet, um ihre Vorhersagen zu treffen.")
+    
+    if hasattr(model, 'feature_importances_'):
+        importances = model.feature_importances_
+        # Die exakte Reihenfolge aus deiner Pipeline
+        features = ['Elo Differenz', 'Poisson (Tore)', 'Form Momentum', 'Angriff (FIFA)', 'Mittelfeld (FIFA)', 'Abwehr (FIFA)']
+        
+        df_imp = pd.DataFrame({"Faktor": features, "Einfluss (%)": importances * 100})
+        df_imp = df_imp.sort_values(by="Einfluss (%)", ascending=True) # Aufsteigend für das Balkendiagramm
+        
+        st.bar_chart(df_imp.set_index("Faktor"), color="#1f77b4")
+        st.info("💡 **Analyse:** Wie zu erwarten, dominiert das stochastische Modell (Poisson), gefolgt von der historischen Stärke (Elo) und der Dominanz im Mittelfeld.")
+    else:
+        st.error("Feature Importance konnte nicht geladen werden.")
+
+
+# ------------------------------------------
+# TAB 4: WM 2026 ORAKEL (NEU)
+# ------------------------------------------
+with tab4:
+    st.header("🏆 WM 2026 Monte-Carlo Orakel")
+    st.markdown("Simuliert den kompletten Turnierbaum (Gruppenphase bis Finale) basierend auf den offiziellen Auslosungen und den mathematischen Modellen der KI.")
+    
+    sims = st.slider("Anzahl der zu simulierenden Weltmeisterschaften:", min_value=1000, max_value=20000, value=5000, step=1000)
+    
+    if st.button("🔮 Starte Turnier-Simulation"):
+        with st.spinner(f"Simuliere {sims} komplette Weltmeisterschaften im Hintergrund (Dauert ca. 5-10 Sekunden)..."):
+            # Wir importieren die Funktion live aus deinem anderen Skript
+            from simulate_wm2026 import run_wm_real_structure
+            
+            # Ausführung und Daten-Abfang
+            sorted_champs, sorted_exits = run_wm_real_structure(num_tournaments=sims)
+            
+            st.success("Simulation abgeschlossen!")
+            
+            col1, col2 = st.columns(2)
+            
+            # Ausgabe 1: Wer wird Weltmeister?
+            with col1:
+                st.subheader("🥇 Favoriten: Weltmeister")
+                df_champs = pd.DataFrame(sorted_champs, columns=["Nation", "Titel"])
+                df_champs["Wahrscheinlichkeit"] = (df_champs["Titel"] / sims * 100).apply(lambda x: f"{x:.2f} %")
+                # Wir blenden die rohe Anzahl der Titel aus und zeigen nur die Prozente
+                st.dataframe(df_champs.head(10).drop(columns=["Titel"]), use_container_width=True)
+                
+            # Ausgabe 2: Wer fliegt raus?
+            with col2:
+                st.subheader("⚠️ Risiko: Vorrunden-Aus")
+                df_exits = pd.DataFrame(sorted_exits, columns=["Nation", "Exits"])
+                df_exits["Risiko"] = (df_exits["Exits"] / sims * 100).apply(lambda x: f"{x:.1f} %")
+                st.dataframe(df_exits.head(10).drop(columns=["Exits"]), use_container_width=True)
