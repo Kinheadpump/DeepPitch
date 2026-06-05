@@ -290,8 +290,18 @@ with tab3:
     st.header("🧠 Feature Importance (Gehirn-Scan)")
     st.markdown("Diese Live-Analyse zeigt direkt aus dem neuronalen Netz, wie stark die KI verschiedene Datenpunkte gewichtet, um ihre Vorhersagen zu treffen.")
     
-    if hasattr(model, 'feature_importances_'):
-        importances = model.feature_importances_
+    # --- 🛠️ FIX: Den echten Random Forest aus der Hülle entpacken ---
+    rf_model = model
+    if hasattr(model, 'model'):
+        rf_model = model.model
+    elif hasattr(model, 'rf'):
+        rf_model = model.rf
+    elif hasattr(model, 'estimator'): # Falls es ein CalibratedClassifier ist
+        rf_model = model.estimator
+    # ----------------------------------------------------------------
+        
+    if hasattr(rf_model, 'feature_importances_'):
+        importances = rf_model.feature_importances_
         # Die exakte Reihenfolge aus deiner Pipeline
         features = ['Elo Differenz', 'Poisson (Tore)', 'Form Momentum', 'Angriff (FIFA)', 'Mittelfeld (FIFA)', 'Abwehr (FIFA)']
         
@@ -301,7 +311,7 @@ with tab3:
         st.bar_chart(df_imp.set_index("Faktor"), color="#1f77b4")
         st.info("💡 **Analyse:** Wie zu erwarten, dominiert das stochastische Modell (Poisson), gefolgt von der historischen Stärke (Elo) und der Dominanz im Mittelfeld.")
     else:
-        st.error("Feature Importance konnte nicht geladen werden.")
+        st.error(f"Feature Importance konnte nicht geladen werden. Aktueller Modell-Typ: {type(rf_model).__name__}")
 
 
 # ------------------------------------------
