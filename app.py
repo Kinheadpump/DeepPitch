@@ -6,6 +6,7 @@ import os
 from src.api_client import LiveOracleAPI
 from src.lineup_scanner import LiveLineupScanner
 import difflib
+import altair as alt
 
 def get_real_team_name(api_name, known_teams):
     """Übersetzt API-Teamnamen unscharf in die korrekten Datenbank-Schlüssel"""
@@ -307,8 +308,14 @@ with tab3:
         
         df_imp = pd.DataFrame({"Faktor": features, "Einfluss (%)": importances * 100})
         df_imp = df_imp.sort_values(by="Einfluss (%)", ascending=False)
-        df_plot = df_imp.set_index("Faktor")
-        st.bar_chart(df_plot, color="#1f77b4")   
+    
+        chart = alt.Chart(df_imp).mark_bar().encode(
+            x=alt.X("Faktor", sort=list(df_imp["Faktor"])),
+            y="Einfluss (%)",
+            color=alt.value("#1f77b4")
+        ).properties(height=400)
+
+        st.altair_chart(chart, use_container_width=True) 
         
         # --- NEU: Die Erklärungen im ausklappbaren Menü ---
         with st.expander("📚 Was bedeuten diese Faktoren genau?"):
