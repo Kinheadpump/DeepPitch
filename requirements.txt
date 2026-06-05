@@ -6,4 +6,4 @@ scipy
 requests
 joblib
 thefuzz
-python-Levenshtein
+Levenshtein
