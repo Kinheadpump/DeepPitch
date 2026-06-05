@@ -7,7 +7,7 @@ from src.api_client import LiveOracleAPI
 from src.lineup_scanner import LiveLineupScanner
 
 # 1. PAGE CONFIGURATION (Clean & Professional)
-st.set_page_config(page_title="DeepPitch Analytics", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="DeepPitch Analytics", layout="wide", initial_sidebar_state="expanded")
 
 # Custom CSS um Standard-Streamlit Margins leicht zu reduzieren (für einen Dashboard-Look)
 st.markdown("""
@@ -16,6 +16,17 @@ st.markdown("""
     div[data-testid="stMetricValue"] { font-size: 1.8rem; }
     </style>
 """, unsafe_allow_html=True)
+
+# ==========================================
+# GLOBALES GLOSSAR (Sidebar)
+# ==========================================
+with st.sidebar:
+    st.markdown("### Methodik & Glossar")
+    st.markdown("""
+    **Expected Value (Edge):** Die positive mathematische Differenz zwischen der vom DeepPitch-Modell berechneten Wahrscheinlichkeit und der vom Markt (Buchmacher) implizierten Wahrscheinlichkeit.
+    
+    **Target Allocation:** Eine konservativ skalierte Risiko-Gewichtung (**Quarter-Kelly Criterion**) basierend auf dem detektierten Edge. Das System schützt das Kapital durch ein hartes Cap von maximal **3% der Bankroll** pro Trade.
+    """)
 
 # ==========================================
 # 2. CORE ENGINE INITIALIZATION
@@ -66,7 +77,7 @@ def render_kelly_advisor(bankroll, probs_ml, elo_h, elo_a, team_h, team_a, live_
         }
         bookie_odds = odds_dict[ai_raw_pred]
 
-    st.markdown("##### Capital Allocation (Half-Kelly)")
+    st.markdown("##### Capital Allocation (Risk-Adjusted)")
     
     if ai_confidence >= 0.50:
         p = ai_confidence
@@ -75,7 +86,8 @@ def render_kelly_advisor(bankroll, probs_ml, elo_h, elo_a, team_h, team_a, live_
         kelly_fraction = (p * b - q) / b
         
         if kelly_fraction > 0:
-            stake_pct = min(kelly_fraction * 0.5, 0.10)
+            # GEFIXTE MATHEMATIK: Quarter-Kelly (0.25) und 3% Max Cap
+            stake_pct = min(kelly_fraction * 0.25, 0.03)
             recommended_stake = bankroll * stake_pct
             edge = (p - 1/bookie_odds) * 100
             
@@ -84,7 +96,7 @@ def render_kelly_advisor(bankroll, probs_ml, elo_h, elo_a, team_h, team_a, live_
             c2.metric("Market Odds" if is_live else "Simulated Odds", f"{bookie_odds:.2f}")
             c3.metric("Expected Value (Edge)", f"+{edge:.1f}%")
             
-            st.info(f"Signal: BUY {team_name.upper()} | Target Allocation: {recommended_stake:.2f} € ({stake_pct*100:.1f}%)")
+            st.success(f"Signal: BUY {team_name.upper()} | Target Allocation: {recommended_stake:.2f} € ({stake_pct*100:.1f}%)")
         else:
             c1, c2 = st.columns(2)
             c1.metric("Model Implied Prob.", f"{p*100:.1f}%")
@@ -92,12 +104,6 @@ def render_kelly_advisor(bankroll, probs_ml, elo_h, elo_a, team_h, team_a, live_
             st.warning("Signal: NEUTRAL | Grund: Negativer Expected Value.")
     else:
         st.error("Signal: NEUTRAL | Grund: Konfidenz-Level unterhalb des Schwellenwerts (< 50%).")
-
-    with st.expander("Methodik & Glossar"):
-        st.markdown("""
-        **Expected Value (Edge):** Die positive Differenz zwischen der vom DeepPitch-Modell berechneten Wahrscheinlichkeit und der vom Markt implizierten Wahrscheinlichkeit.
-        **Target Allocation:** Eine nach unten skalierte Risiko-Gewichtung (Half-Kelly Criterion) basierend auf dem detektierten Edge und der Bankroll-Größe. Maximum Cap liegt bei 10%.
-        """)
 
 # ==========================================
 # 4. MAIN UI ROUTING
