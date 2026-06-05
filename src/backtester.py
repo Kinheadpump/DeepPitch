@@ -1,301 +1,360 @@
 import pandas as pd
-from sklearn.metrics import brier_score_loss
-from src.data_loader import DataLoader
-from src.features import EloRatingSystem
-from src.models import DynamicRollingPoisson, MetaMachineLearningModel
+import numpy as np
+from scipy.stats import poisson
+import os
+
+class DataLoader:
+    def load_data(self, start_year=2000, file_path="data/international_matches.csv"):
+        print(f"[Data] Lade historische Spiele aus {file_path} (ab Jahr {start_year})...")
+        df = pd.read_csv(file_path)
+        df['date'] = pd.to_datetime(df['date'])
+        return df[df['date'].dt.year >= start_year].copy()
+
+    def load_fifa_ratings(self, file_path="data/fifa_players.csv"):
+        """Lädt und aggregiert die granularen FIFA-Ratings pro Nation"""
+        # OOM SCHUTZ & DUPLIKAT-FILTER
+        if "fifa_players.csv" in file_path and os.path.exists("data/fifa_players_cloud.csv"):
+            print("🛡️ [Data-Shield] 1.2 GB Monster erkannt! Leite auf deduplizierte 'fifa_players_cloud.csv' um...")
+            file_path = "data/fifa_players_cloud.csv"
+            
+        print(f"[Data] Lade granulare Spieler-Qualitäten (FIFA Ratings) aus {file_path}...")
+        df = pd.read_csv(file_path, low_memory=False)
+        
+        # Fallback für verschiedene Spaltennamen
+        if 'nationality' in df.columns and 'nationality_name' not in df.columns:
+            df.rename(columns={'nationality': 'nationality_name'}, inplace=True)
+            
+        nation_stats = {}
+        for nation, group in df.groupby('nationality_name'):
+            top = group.sort_values('overall', ascending=False).head(23)
+            
+            att = top['overall'].mean() + (top['shooting'].mean() * 0.15)
+            mid = top['overall'].mean() + (top['passing'].mean() * 0.15)
+            dfn = top['overall'].mean() + (top['defending'].mean() * 0.15)
+            
+            nation_stats[nation] = {
+                'ATT': round(att, 2) if pd.notna(att) else 75.0,
+                'MID': round(mid, 2) if pd.notna(mid) else 75.0,
+                'DEF': round(dfn, 2) if pd.notna(dfn) else 75.0
+            }
+            
+        print(f"[Data] Erfolgreich granulare Kader-Ratings für {len(nation_stats)} Nationen berechnet.")
+        return nation_stats
+
+class EloSystem:
+    def __init__(self, k=20):
+        self.ratings = {}
+        self.k = k
+
+    def get_rating(self, team):
+        return self.ratings.get(team, 1500.0)
+
+    def update(self, team_h, team_a, goals_h, goals_a, is_neutral=True):
+        r_h = self.get_rating(team_h)
+        r_a = self.get_rating(team_a)
+        
+        r_h_adj = r_h + (0 if is_neutral else 100)
+        
+        e_h = 1 / (1 + 10 ** ((r_a - r_h_adj) / 400))
+        e_a = 1 / (1 + 10 ** ((r_h_adj - r_a) / 400))
+        
+        if goals_h > goals_a: s_h, s_a = 1.0, 0.0
+        elif goals_h < goals_a: s_h, s_a = 0.0, 1.0
+        else: s_h, s_a = 0.5, 0.5
+            
+        mov = abs(goals_h - goals_a)
+        g_mult = np.log(mov + 1) if mov > 0 else 1.0
+        
+        self.ratings[team_h] = r_h + self.k * g_mult * (s_h - e_h)
+        self.ratings[team_a] = r_a + self.k * g_mult * (s_a - e_a)
+
+    def calculate_historical_elo(self, df):
+        """Berechnet den Pre-Match Elo-Wert für den wasserdichten Backtest"""
+        print("[Features] Berechne dynamische Elo-Ratings für alle Teams...")
+        df = df.sort_values('date').reset_index(drop=True)
+        elo_h_list = []
+        elo_a_list = []
+
+        for _, row in df.iterrows():
+            team_h = row['home_team']
+            team_a = row['away_team']
+
+            elo_h_list.append(self.get_rating(team_h))
+            elo_a_list.append(self.get_rating(team_a))
+
+            self.update(team_h, team_a, row['home_score'], row['away_score'], row['neutral'])
+
+        df['elo_h'] = elo_h_list
+        df['elo_a'] = elo_a_list
+        print("[Features] Elo-Ratings erfolgreich berechnet.")
+        return df
+
+class PoissonEngine:
+    def __init__(self):
+        self.max_goals = 7
+
+    def predict_match_probabilities(self, team_h, team_a, is_neutral, elo_diff, att_diff, def_diff):
+        base_hg = 1.3
+        base_ag = 1.1 if not is_neutral else 1.3
+        
+        lambda_h = base_hg + (elo_diff * 0.001) + (att_diff * 0.015)
+        lambda_a = base_ag - (elo_diff * 0.001) - (def_diff * 0.015)
+        
+        lambda_h = max(0.1, lambda_h)
+        lambda_a = max(0.1, lambda_a)
+        
+        matrix = np.zeros((self.max_goals, self.max_goals))
+        for i in range(self.max_goals):
+            for j in range(self.max_goals):
+                matrix[i, j] = poisson.pmf(i, lambda_h) * poisson.pmf(j, lambda_a)
+        
+        home_win = np.tril(matrix, -1).sum()
+        draw = np.trace(matrix)
+        away_win = np.triu(matrix, 1).sum()
+        
+        total = home_win + draw + away_win
+        
+        return {
+            'home_win': home_win / total,
+            'draw': draw / total,
+            'away_win': away_win / total,
+            'matrix': matrix / total
+        }
+
+    def get_smart_score(self, matrix, probs_ml=None):
+        flat_idx = np.argmax(matrix)
+        goals_h, goals_a = np.unravel_index(flat_idx, matrix.shape)
+        return int(goals_h), int(goals_a)
 
 class Backtester:
     def __init__(self):
-        self.loader = DataLoader(file_path="data/international_matches.csv")
-        self.elo = EloRatingSystem()
-        self.poisson = DynamicRollingPoisson(window_size=15)
-        self.ml_model = None
+        self.FALLBACK_RATING = {'ATT': 75.0, 'MID': 75.0, 'DEF': 75.0}
+        self.loader = DataLoader()
+        self.elo = EloSystem()
+        self.poisson = PoissonEngine()
+        self.continent_map = {}
+
+    def _get_continent(self, team):
+        return self.continent_map.get(team, "Europe")
+
+    def _generate_historical_features(self, df, fifa_dict):
+        print("[Pipeline] Mapping globaler Kontinental-Strukturen...")
+        df = df.sort_values('date').reset_index(drop=True)
         
-        self.FALLBACK_RATING = {'ATT': 70.0, 'MID': 70.0, 'DEF': 70.0}
-        self.CONTINENT_MAP = {
-            'Europe': ['France', 'Germany', 'Spain', 'England', 'Portugal', 'Netherlands', 'Belgium', 'Croatia', 'Denmark', 'Switzerland', 'Italy', 'Serbia', 'Poland', 'Wales', 'Sweden', 'Russia'],
-            'South America': ['Brazil', 'Argentina', 'Uruguay', 'Colombia', 'Ecuador', 'Peru', 'Chile'],
-            'Asia': ['Japan', 'South Korea', 'Qatar', 'Iran', 'Saudi Arabia', 'Australia'],
-            'Africa': ['Morocco', 'Senegal', 'Cameroon', 'Ghana', 'Tunisia', 'Egypt', 'Nigeria'],
-            'North America': ['USA', 'Mexico', 'Canada', 'Costa Rica', 'Panama']
-        }
+        # Pre-Mapping aller Kontinente zur Vermeidung von Cold-Starts
+        for _, row in df.iterrows():
+            t = str(row.get('tournament', ''))
+            h, a = row['home_team'], row['away_team']
+            if 'Euro' in t: self.continent_map[h], self.continent_map[a] = 'Europe', 'Europe'
+            elif 'Copa' in t: self.continent_map[h], self.continent_map[a] = 'South America', 'South America'
+            elif 'African' in t or 'Africa' in t: self.continent_map[h], self.continent_map[a] = 'Africa', 'Africa'
+            elif 'Asian' in t or 'AFC' in t: self.continent_map[h], self.continent_map[a] = 'Asia', 'Asia'
+            elif 'CONCACAF' in t or 'Gold Cup' in t: self.continent_map[h], self.continent_map[a] = 'North America', 'North America'
 
-    def _get_outcome(self, h_score, a_score):
-        if h_score > a_score: return 2
-        if h_score == a_score: return 1
-        return 0
-
-    def _get_continent(self, team: str) -> str:
-        for continent, teams in self.CONTINENT_MAP.items():
-            if team in teams: return continent
-        return 'Other'
-
-    def _calculate_weighted_form(self, recent_matches: list) -> float:
-        if not recent_matches: return 0.5
-        total_weight = 0.0
-        weighted_score = 0.0
-        for pts, weight in recent_matches:
-            weighted_score += pts * weight
-            total_weight += weight
-        return weighted_score / total_weight if total_weight > 0 else 0.5
-
-    def _generate_historical_features(self, df: pd.DataFrame, fifa_ratings: dict) -> pd.DataFrame:
-        """
-        MODUL 1: Reine chronologische Feature-Pipeline.
-        HIER wird der Poisson-State mathematisch sauber Tag für Tag aufgebaut,
-        OHNE Wissen aus der Zukunft!
-        """
-        print("\n⚡ [Pipeline] Generiere Master-Feature-Tabelle (Vasserstoff-Dicht)...")
-        feature_data = []
-        recent_form = {} 
+        print("[Pipeline] Berechne mathematische Feature-Vektoren (Poisson, Form, Kontinent-Vorteil)...")
+        features = []
+        team_form_tracker = {}
 
         for _, row in df.iterrows():
-            is_neutral = bool(row['neutral'])
+            team_h, team_a = row['home_team'], row['away_team']
+            goals_h, goals_a = row['home_score'], row['away_score']
+            is_neutral = int(row['neutral'])
+            elo_h, elo_a = row['elo_h'], row['elo_a']
             
-            squad_h = fifa_ratings.get(row['home_team'], self.FALLBACK_RATING)
-            squad_a = fifa_ratings.get(row['away_team'], self.FALLBACK_RATING)
+            stats_h = fifa_dict.get(team_h, self.FALLBACK_RATING)
+            stats_a = fifa_dict.get(team_a, self.FALLBACK_RATING)
             
-            elo_diff = row['elo_home'] - row['elo_away']
-            att_diff = squad_h['ATT'] - squad_a['ATT']
-            def_diff = squad_h['DEF'] - squad_a['DEF']
-            mid_diff = squad_h['MID'] - squad_a['MID']
-
-            # SAUBERE HISTORISCHE BERECHNUNG: Genau an diesem Tag berechnet!
-            probs = self.poisson.predict_match_probabilities(
-                row['home_team'], row['away_team'], is_neutral,
-                elo_diff=elo_diff, att_diff=att_diff, def_diff=def_diff
-            )
+            elo_diff = elo_h - elo_a
+            att_diff = stats_h['ATT'] - stats_a['ATT']
+            mid_diff = stats_h['MID'] - stats_a['MID']
+            def_diff = stats_h['DEF'] - stats_a['DEF']
             
-            form_h = self._calculate_weighted_form(recent_form.get(row['home_team'], []))
-            form_a = self._calculate_weighted_form(recent_form.get(row['away_team'], []))
-
-            home_cont = self._get_continent(row['home_team'])
-            away_cont = self._get_continent(row['away_team'])
+            # 1. Feature: Projections Vector (Poisson Difference)
+            probs_p = self.poisson.predict_match_probabilities(team_h, team_a, bool(is_neutral), elo_diff, att_diff, def_diff)
+            poisson_diff = probs_p['home_win'] - probs_p['away_win']
             
-            hist_continent_diff = 0
-            if not is_neutral:
-                cont_adv_h = 1 
-                cont_adv_a = 1 if away_cont == home_cont else 0
-                hist_continent_diff = cont_adv_h - cont_adv_a
-
-            feature_data.append({
+            # 2. Feature: Rollierendes Form-Delta (Letzte 5 Spiele, normiert auf [-1, 1])
+            form_h = np.mean(team_form_tracker[team_h]) if team_h in team_form_tracker and team_form_tracker[team_h] else 0.0
+            form_a = np.mean(team_form_tracker[team_a]) if team_a in team_form_tracker and team_form_tracker[team_a] else 0.0
+            form_diff = form_h - form_a
+            
+            # 3. Feature: Continent Advantage Difference
+            t_name = str(row['tournament'])
+            if 'Euro' in t_name: t_cont = 'Europe'
+            elif 'Copa' in t_name: t_cont = 'South America'
+            elif 'African' in t_name or 'Africa' in t_name: t_cont = 'Africa'
+            elif 'Asian' in t_name or 'AFC' in t_name: t_cont = 'Asia'
+            elif 'Gold Cup' in t_name or 'CONCACAF' in t_name: t_cont = 'North America'
+            else: t_cont = self._get_continent(team_h) if not is_neutral else 'Other'
+                
+            adv_h = 1 if self._get_continent(team_h) == t_cont else 0
+            adv_a = 1 if self._get_continent(team_a) == t_cont else 0
+            continent_adv_diff = adv_h - adv_a
+            
+            if goals_h > goals_a: target = 2
+            elif goals_h == goals_a: target = 1
+            else: target = 0
+                
+            features.append({
                 'date': row['date'],
                 'tournament': row['tournament'],
-                'home_team': row['home_team'],
-                'away_team': row['away_team'],
-                'home_score': row['home_score'],
-                'away_score': row['away_score'],
-                'home_continent': home_cont,
-                'away_continent': away_cont,
-                'continent_adv_diff': hist_continent_diff,
-                'elo_home': row['elo_home'],
-                'elo_away': row['elo_away'],
+                'home_team': team_h,
+                'away_team': team_a,
+                'is_neutral': is_neutral,
+                'elo_h': elo_h,
+                'elo_a': elo_a,
                 'elo_diff': elo_diff,
-                # Wir frieren die komplette Matrix und die Differenz HIER ein!
-                'poisson_diff': probs['home_win'] - probs['away_win'],
-                'poisson_matrix': probs['matrix'], 
-                'form_diff': form_h - form_a,
-                'att_diff': att_diff, 
-                'mid_diff': mid_diff, 
-                'def_diff': def_diff, 
-                'outcome': self._get_outcome(row['home_score'], row['away_score'])
+                'att_diff': att_diff,
+                'mid_diff': mid_diff,
+                'def_diff': def_diff,
+                'poisson_diff': poisson_diff,
+                'form_diff': form_diff,
+                'continent_adv_diff': continent_adv_diff,
+                'outcome': target  # <--- HIER IST DER FIX!
             })
             
-            # Das Gedächtnis inkrementell updaten (wächst chronologisch mit)
-            self.poisson.update_match(row['home_team'], row['away_team'], row['home_score'], row['away_score'], row['elo_home'], row['elo_away'])
+            # ZUKUNFTS-UPDATE
+            res_h = 1.0 if goals_h > goals_a else (-1.0 if goals_h < goals_a else 0.0)
+            res_a = -res_h
+            if team_h not in team_form_tracker: team_form_tracker[team_h] = []
+            if team_a not in team_form_tracker: team_form_tracker[team_a] = []
+            team_form_tracker[team_h].append(res_h)
+            team_form_tracker[team_a].append(res_a)
+            if len(team_form_tracker[team_h]) > 5: team_form_tracker[team_h].pop(0)
+            if len(team_form_tracker[team_a]) > 5: team_form_tracker[team_a].pop(0)
             
-            outcome = self._get_outcome(row['home_score'], row['away_score'])
-            h_pts = 1.0 if outcome == 2 else (0.5 if outcome == 1 else 0.0)
-            a_pts = 1.0 if outcome == 0 else (0.5 if outcome == 1 else 0.0)
-            
-            weight = 3.0 if 'FIFA World Cup' in row['tournament'] else (2.0 if 'qualification' in row['tournament'].lower() else 1.0)
-            
-            for t, p in [(row['home_team'], h_pts), (row['away_team'], a_pts)]:
-                if t not in recent_form: recent_form[t] = []
-                recent_form[t].append((p, weight))
-                if len(recent_form[t]) > 5: recent_form[t].pop(0)
+        df_features = pd.DataFrame(features)
+        
+        # Filter auf Major-Turniere zur finalen Extraktion
+        major_tournaments = [
+            'FIFA World Cup', 'UEFA Euro', 'Copa América', 'African Cup of Nations',
+            'CONCACAF Championship', 'Gold Cup', 'AFC Asian Cup'
+        ]
+        df_tradeable = df_features[df_features['tournament'].isin(major_tournaments)].copy()
+        print(f"[Pipeline] Filter aktiv: {len(df_tradeable)} handelbare Major-Turnierspiele extrahiert.")
+        
+        return df_tradeable
+    def stresstest(self, model, df_features, initial_bankroll=10000.0, num_simulations=1000):
+        print("\n" + "="*60)
+        print("🎲 INITIATING MONTE CARLO RISK SIMULATION (STRESS TEST)")
+        print("="*60)
+        print(f"[Risk] Analysiere Trades mit {num_simulations} permutierten Pfaden...")
+        
+        trades = []
+        
+        # 1. Signale und Edges extrahieren
+        for idx, row in df_features.iterrows():
+            # Wir nutzen exakt die Schnittstelle, die dein Modell versteht!
+            try:
+                if hasattr(model, 'predict_probabilities'):
+                    probs = model.predict_probabilities(
+                        row['elo_diff'], 
+                        row['poisson_diff'], 
+                        row['form_diff'], 
+                        row['continent_adv_diff'], 
+                        row['att_diff'], 
+                        row['mid_diff'], 
+                        row['def_diff']
+                    )
+                    prob_a = probs['away_win']
+                    prob_d = probs['draw']
+                    prob_h = probs['home_win']
+                elif hasattr(model, 'predict_proba'):
+                    # Fallback für nackte scikit-learn Modelle
+                    cols = ['elo_diff', 'poisson_diff', 'form_diff', 'continent_adv_diff', 'att_diff', 'mid_diff', 'def_diff']
+                    X = row[cols].to_frame().T
+                    p = model.predict_proba(X)[0]
+                    prob_a, prob_d, prob_h = p[0], p[1], p[2]
+                else:
+                    print("⚠️ Kritisches Problem: Modell-Schnittstelle nicht erkannt.")
+                    return
+            except Exception as e:
+                print(f"❌ Fehler bei Prediction (Spiel {idx}): {e}")
+                continue
 
-        df_features = pd.DataFrame(feature_data)
-        df_features['date'] = pd.to_datetime(df_features['date'])
-        return df_features
-
-    def _evaluate_tournament(self, df_features: pd.DataFrame, start_str: str, end_str: str, host_nation: str, host_continent: str, starting_bankroll: float) -> dict:
-        t_start = pd.to_datetime(start_str)
-        t_end = pd.to_datetime(end_str)
-        
-        train_df = df_features[df_features['date'] < t_start].copy()
-        test_df = df_features[(df_features['date'] >= t_start) & 
-                              (df_features['date'] <= t_end) & 
-                              (df_features['tournament'] == 'FIFA World Cup')].copy()
-
-        self.ml_model = MetaMachineLearningModel()
-        self.ml_model.train(train_df)
-        
-        current_bankroll = starting_bankroll
-        
-        stats = {
-            'correct_ml': 0, 'correct_base': 0, 'bets_placed': 0, 'exact_scores': 0, 
-            'matches': len(test_df), 'total_stake': 0.0, 'total_return': 0.0,
-            'score_tracker': {},
-            'total_goal_error': 0,
-            'close_misses': 0
-        }
-        y_true_brier, y_prob_ml = [], []
-        
-        for _, row in test_df.iterrows():
-            actual = row['outcome']
-            
-            # TURNIER-VORTEIL (LIVE BERECHNET)
-            cont_adv_h = 1 if row['home_continent'] == host_continent else 0
-            cont_adv_a = 1 if row['away_continent'] == host_continent else 0
-            
-            # FIX: Wir nutzen den historisch eingefrorenen poisson_diff Wert aus row! 
-            # Das verhindert jegliche Kontamination aus der Zukunft.
-            historical_poisson_diff = row['poisson_diff']
-            historical_matrix = row['poisson_matrix']
-            
-            probs_ml = self.ml_model.predict_probabilities(
-                row['elo_diff'], historical_poisson_diff, row['form_diff'], 
-                cont_adv_h - cont_adv_a, row['att_diff'], row['mid_diff'], row['def_diff']
-            )
-            
-            # Buchmacher-Quoten Simulation (5% Marge)
-            elo_win_prob = 1 / (1 + 10 ** ((row['elo_away'] - row['elo_home']) / 400))
-            elo_loss_prob = 1 / (1 + 10 ** ((row['elo_home'] - row['elo_away']) / 400))
+            # Approximierte echte Buchmacher-Wahrscheinlichkeit (aus Elo)
+            elo_win_prob = 1 / (1 + 10 ** ((-row['elo_diff']) / 400))
+            elo_loss_prob = 1 / (1 + 10 ** ((row['elo_diff']) / 400))
             sum_p = elo_win_prob + 0.25 + elo_loss_prob
             
-            odds = {
-                2: 1 / ((elo_win_prob / sum_p) * 1.05),
-                1: 1 / ((0.25 / sum_p) * 1.05),
-                0: 1 / ((elo_loss_prob / sum_p) * 1.05)
-            }
+            # Quoten mit simulierter 5% Buchmacher-Marge (Vig)
+            odds_h = 1 / ((elo_win_prob / sum_p) * 1.05)
+            odds_a = 1 / ((elo_loss_prob / sum_p) * 1.05)
             
-            y_true_brier.append(1 if actual == 2 else 0)
-            y_prob_ml.append(probs_ml['home_win'])
+            ai_pred = np.argmax([prob_a, prob_d, prob_h])
+            outcome = row['outcome']
             
-            pred_base = 2 if row['elo_diff'] > 0 else 0
-            ai_confidence = max(probs_ml['home_win'], probs_ml['away_win'])
-            ai_raw_pred = 2 if probs_ml['home_win'] > probs_ml['away_win'] else 0
+            # Signal Home (Modell ist sicher UND sieht positiven Erwartungswert gegen den Markt)
+            if ai_pred == 2 and prob_h > 0.50: 
+                edge = prob_h - (1/odds_h)
+                if edge > 0:
+                    b = odds_h - 1
+                    q = 1 - prob_h
+                    k_fraction = ((prob_h * b - q) / b) * 0.25 # Quarter-Kelly (gedrosseltes Risiko)
+                    k_fraction = min(max(k_fraction, 0), 0.03) # Hartes Cap: Max 3% Bankroll pro Trade
+                    won = (outcome == 2)
+                    trades.append({'stake_pct': k_fraction, 'odds': odds_h, 'won': won})
+                    
+            # Signal Away
+            elif ai_pred == 0 and prob_a > 0.50: 
+                edge = prob_a - (1/odds_a)
+                if edge > 0:
+                    b = odds_a - 1
+                    q = 1 - prob_a
+                    k_fraction = ((prob_a * b - q) / b) * 0.25 # Quarter-Kelly (gedrosseltes Risiko)
+                    k_fraction = min(max(k_fraction, 0), 0.03) # Hartes Cap: Max 3% Bankroll pro Trade
+                    won = (outcome == 0)
+                    trades.append({'stake_pct': k_fraction, 'odds': odds_a, 'won': won})
+
+        if not trades:
+            print("[Risk] ⚠️ Keine profitablen Edges gefunden. Das Modell ist aktuell zu konservativ.")
+            return
             
-            if ai_confidence >= 0.50:
-                p = ai_confidence
-                b = odds[ai_raw_pred] - 1
-                q = 1 - p
-                kelly_fraction = (p * b - q) / b
+        print(f"[Risk] {len(trades)} profitable Handelssignale im Datensatz identifiziert.")
+        print("[Risk] Starte Permutationen...")
+        
+        # 2. Monte Carlo Engine
+        results = []
+        max_drawdowns = []
+        bankruptcies = 0
+        
+        for i in range(num_simulations):
+            np.random.shuffle(trades) 
+            current_br = initial_bankroll
+            peak_br = initial_bankroll
+            max_dd = 0.0
+            
+            for t in trades:
+                stake = current_br * t['stake_pct']
+                if t['won']:
+                    current_br += stake * (t['odds'] - 1)
+                else:
+                    current_br -= stake
+                    
+                if current_br > peak_br: peak_br = current_br
+                dd = (peak_br - current_br) / peak_br
+                if dd > max_dd: max_dd = dd
                 
-                if kelly_fraction > 0:
-                    stake_pct = min(kelly_fraction * 0.5, 0.10)
-                    stake = current_bankroll * stake_pct
+                # Bankrottgrenze bei 90% Verlust des Startkapitals
+                if current_br < initial_bankroll * 0.1: 
+                    bankruptcies += 1
+                    break
                     
-                    stats['bets_placed'] += 1
-                    stats['total_stake'] += stake
-                    current_bankroll -= stake
-                    
-                    if ai_raw_pred == actual: 
-                        stats['correct_ml'] += 1
-                        winnings = stake * odds[ai_raw_pred]
-                        stats['total_return'] += winnings
-                        current_bankroll += winnings
-                        
-                    if pred_base == actual: stats['correct_base'] += 1
-                    
-                    # FIX: Das Orakel nutzt die historisch saubere, eingefrorene Matrix!
-                    pred_h, pred_a = self.poisson.get_smart_score(historical_matrix, probs_ml)
-                    
-                    error_h = abs(row['home_score'] - pred_h)
-                    error_a = abs(row['away_score'] - pred_a)
-                    total_error = error_h + error_a
-                    
-                    stats['total_goal_error'] += total_error
-                    
-                    if total_error == 0:
-                        stats['exact_scores'] += 1
-                        score_str = f"{int(row['home_score'])}:{int(row['away_score'])}"
-                        stats['score_tracker'][score_str] = stats['score_tracker'].get(score_str, 0) + 1
-                    elif total_error == 1:
-                        stats['close_misses'] += 1
-
-        stats['brier_ml'] = brier_score_loss(y_true_brier, y_prob_ml)
-        stats['ending_bankroll'] = current_bankroll
-        return stats
-
-    def run_stress_test(self):
-        print("="*60)
-        print("🏆 STARTE LEAK-FREIEN QUANT-TEST (WATERPROOF V5) 🏆")
-        print("="*60)
-
-        df = self.loader.load_data(start_year=2000)
-        df = self.elo.calculate_historical_elo(df)
-        fifa_ratings = self.loader.load_fifa_ratings("data/fifa_players.csv")
-
-        # 1. Pipeline baut ALLES chronologisch auf (Absolut sicher!)
-        df_features = self._generate_historical_features(df, fifa_ratings)
-
-        tournaments = [
-            ("WM 2014 (Brasilien)", "2014-06-12", "2014-07-13", "Brazil", "South America"),
-            ("WM 2018 (Russland)",  "2018-06-14", "2018-07-15", "Russia", "Europe"),
-            ("WM 2022 (Katar)",     "2022-11-20", "2022-12-18", "Qatar", "Asia")
-        ]
-
-        total_bets, total_exact = 0, 0
-        total_stake_all, total_return_all = 0.0, 0.0
-        master_score_tracker = {}
-        total_goal_error_all = 0
-        total_close_misses = 0
-        
-        kontostand = 1000.0
-
-        for name, start_str, end_str, host_nation, host_continent in tournaments:
-            print(f"\n⏳ [{name}] Simuliere Wetten mit Kontostand: {kontostand:.2f}€...")
-            stats = self._evaluate_tournament(df_features, start_str, end_str, host_nation, host_continent, kontostand)
+            results.append(current_br)
+            max_drawdowns.append(max_dd)
             
-            bp = stats['bets_placed']
-            profit = stats['total_return'] - stats['total_stake']
-            roi = (profit / stats['total_stake']) * 100 if stats['total_stake'] > 0 else 0
-            
-            print(f"✅ [{name}] {bp} Wetten | Umsatz: {stats['total_stake']:.2f}€ | Profit: {profit:+.2f}€ (ROI: {roi:+.2f}%)")
-            
-            kontostand = stats['ending_bankroll']
-            
-            total_bets += bp
-            total_exact += stats['exact_scores']
-            total_stake_all += stats['total_stake']
-            total_return_all += stats['total_return']
-            
-            total_goal_error_all += stats['total_goal_error']
-            total_close_misses += stats['close_misses']
-            for score, count in stats['score_tracker'].items():
-                master_score_tracker[score] = master_score_tracker.get(score, 0) + count
-
-        final_profit = kontostand - 1000.0
-        final_roi = (final_profit / total_stake_all) * 100 if total_stake_all > 0 else 0
-        final_exact_rate = (total_exact / total_bets) * 100 if total_bets > 0 else 0
+        avg_br = np.mean(results)
+        avg_dd = np.mean(max_drawdowns)
+        max_dd_overall = np.max(max_drawdowns)
+        risk_of_ruin = (bankruptcies / num_simulations) * 100
+        roi = ((avg_br - initial_bankroll) / initial_bankroll) * 100
         
-        avg_goal_error = total_goal_error_all / total_bets if total_bets > 0 else 0
-        close_miss_rate = (total_close_misses / total_bets) * 100 if total_bets > 0 else 0
+        print("\n📊 MONTE CARLO RESULTATE (1.000 Pfade simuliert)")
+        print(f"➜ Startkapital:        {initial_bankroll:,.2f} €")
+        print(f"➜ Erwartungswert:      {avg_br:,.2f} € (ROI: {roi:+.1f}%)")
+        print(f"➜ Durchschn. Drawdown: -{avg_dd*100:.1f}%")
+        print(f"➜ Worst-Case Drawdown: -{max_dd_overall*100:.1f}%")
+        print(f"➜ Risk of Ruin:        {risk_of_ruin:.2f}% (Gefahr des Totalverlusts)")
+        print("============================================================\n")
         
-        print("\n" + "="*60)
-        print("🌍 FINALES QUANT-ERGEBNIS (OHNE DATEN-LEAK) 🌍")
-        print("="*60)
-        print(f"Startkapital:          1000.00€")
-        print(f"Gesamter Umsatz:       {total_stake_all:.2f}€")
-        print(f"Reiner Netto-Profit:   {final_profit:+.2f}€")
-        print(f"Finanzielle Rendite:   {final_roi:+.2f}% (ROI)")
-        print(f"Endkontostand:         {kontostand:.2f}€")
-        print(f"Exakte Tore getroffen: {final_exact_rate:.2f}%")
-        
-        print("-" * 60)
-        print("📏 DISTANZ-METRIKEN (MODELL-SCHÄRFE):")
-        print(f"   Ø Tor-Fehler pro Spiel: {avg_goal_error:.2f} Tore daneben")
-        print(f"   Pfostenschüsse (1 Tor daneben): {total_close_misses} von {total_bets} ({close_miss_rate:.1f}%)")
-        print(f"   Kombiniert (Treffer + Pfosten): {(final_exact_rate + close_miss_rate):.2f}% aller Wetten")
-        
-        print("-" * 60)
-        print("🎯 EXAKTE ERGEBNISSE (DETAIL-ANALYSE):")
-        if not master_score_tracker:
-            print("   Leider wurden keine exakten Ergebnisse getroffen.")
-        else:
-            sorted_scores = sorted(master_score_tracker.items(), key=lambda x: x[1], reverse=True)
-            for score, count in sorted_scores:
-                print(f"   Ergebnis {score} -> {count} mal korrekt vorhergesagt")
-        print("="*60)
+        return {'roi': roi, 'max_drawdown': max_dd_overall, 'risk_of_ruin': risk_of_ruin}
