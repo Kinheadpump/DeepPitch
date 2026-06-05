@@ -306,7 +306,7 @@ with tab3:
         features = ['Elo Differenz', 'Poisson (Tore)', 'Form Momentum', 'Angriff (FIFA)', 'Mittelfeld (FIFA)', 'Abwehr (FIFA)']
         
         df_imp = pd.DataFrame({"Faktor": features, "Einfluss (%)": importances * 100})
-        df_imp = df_imp.sort_values(by="Einfluss (%)", ascending=True) # Aufsteigend für das Balkendiagramm
+        df_imp = df_imp.sort_values(by="Einfluss (%)", ascending=False) # Absteigend sortiert (Wichtigster Faktor ganz links)       
         
         st.bar_chart(df_imp.set_index("Faktor"), color="#1f77b4")
         
