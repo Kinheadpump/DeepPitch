@@ -20,15 +20,17 @@ def initialize_engine():
         
     brain = joblib.load(brain_path)
     try:
-        my_api_key = st.secrets["FOOTBALL_DATA_KEY"]
+        my_football_key = st.secrets["FOOTBALL_DATA_KEY"]
+        my_sports_key = st.secrets.get("API_SPORTS_KEY", "DEMO")
     except FileNotFoundError:
-        st.warning("⚠️ API-Key nicht gefunden! Nutze Fallback-Modus.")
-        my_api_key = "DEMO"
+        st.warning("⚠️ Secrets nicht gefunden! Nutze Fallback-Modus.")
+        my_football_key = "DEMO"
+        my_sports_key = "DEMO"
         
-    api = LiveOracleAPI(api_key=my_api_key)
+    api = LiveOracleAPI(api_key=my_football_key) 
     
-    # NEU: Wir laden den 1.2 GB Scanner in den RAM (dauert beim ersten Start 2-3 Sekunden)
-    scanner = LiveLineupScanner(fifa_csv_path="data/fifa_players.csv")
+    # Der Scanner bekommt nun die Lizenz, ins echte Internet zu gehen!
+    scanner = LiveLineupScanner(fifa_csv_path="data/fifa_players_cloud.csv", api_key=my_sports_key)
     
     return brain['backtester'], brain['model'], brain['fifa'], api, scanner
 
