@@ -23,7 +23,7 @@ def get_real_team_name(api_name, known_teams):
         return manual_map[api_name]
         
     # 2. Unscharfe Suche (Fuzzy Matching) für leichte Schreibfehler
-    matches = difflib.get_close_matches(api_name, known_teams, n=1, cutoff=0.55)
+    matches = difflib.get_close_matches(api_name, known_teams, n=1, cutoff=0.85)
     return matches[0] if matches else api_name
 
 # 1. PAGE CONFIGURATION (Clean & Professional)
