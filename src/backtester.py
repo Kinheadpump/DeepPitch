@@ -101,20 +101,27 @@ class PoissonEngine:
             'home_win': home_win / total, 'draw': draw / total, 'away_win': away_win / total, 'matrix': matrix / total
         }
 
-    def get_smart_score(self, matrix, probs_ml=None):
+    def get_smart_score(self, probs_matrix, probs_ml=None):
         """
-        Nutzt die ML-Tendenz, um ein realistisches, tendenzkonformes 
-        Ergebnis statt der reinen mathematischen Modal-Zelle zu erzeugen.
+        Berechnet das projizierte Ergebnis basierend auf dem Erwartungswert (xG).
+        Anstatt das höchste Einzel-Ergebnis (Modus) zu nehmen, werden die xG
+        mathematisch exakt aus der Matrix extrahiert und kaufmännisch gerundet.
         """
-        flat_idx = np.argmax(matrix)
-        goals_h, goals_a = np.unravel_index(flat_idx, matrix.shape)
+        xg_h = 0.0
+        xg_a = 0.0
         
-        if probs_ml and probs_ml['home_win'] > 0.55 and goals_h == goals_a:
-            return int(goals_h + 1), int(goals_a)
-        elif probs_ml and probs_ml['away_win'] > 0.55 and goals_h == goals_a:
-            return int(goals_h), int(goals_a + 1)
-            
-        return int(goals_h), int(goals_a)
+        # Iteriere durch die Matrix (meist 6x6 Tore)
+        for i in range(probs_matrix.shape[0]):
+            for j in range(probs_matrix.shape[1]):
+                prob = probs_matrix[i, j]
+                xg_h += i * prob  # Tore Team H * Wahrscheinlichkeit
+                xg_a += j * prob  # Tore Team A * Wahrscheinlichkeit
+                
+        # Runden auf das logische, menschenlesbare Endergebnis
+        proj_goals_h = int(round(xg_h))
+        proj_goals_a = int(round(xg_a))
+        
+        return proj_goals_h, proj_goals_a
 
 class Backtester:
     def __init__(self):
