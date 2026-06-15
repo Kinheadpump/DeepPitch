@@ -16,8 +16,12 @@ def run_monte_carlo_simulation():
 
     # 1. Rohdaten laden
     df = bt.loader.load_data(start_year=2000)
-    
+
     # 2. Pre-Match Elo-Werte berechnen
+    # Reset: the pickled bt.elo already holds the final evolved Elo state from training.
+    # Without this reset, calculate_historical_elo starts from those evolved values
+    # instead of the correct 1500 baseline, producing wrong elo_diff features.
+    bt.elo.ratings = {}
     df = bt.elo.calculate_historical_elo(df)
     
     # 3. Den historischen Feature-Vektor (die 2.100 Turnierspiele) generieren

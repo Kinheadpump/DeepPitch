@@ -5,3 +5,7 @@ scikit-learn
 scipy
 joblib
 tqdm
+lightgbm
+altair
+thefuzz
+python-Levenshtein

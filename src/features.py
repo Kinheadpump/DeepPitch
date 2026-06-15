@@ -1,3 +1,6 @@
+# DEPRECATED — superseded by EloSystem inside src/backtester.py.
+# This file is kept for reference only and is not imported by the active pipeline.
+
 import pandas as pd
 
 class EloRatingSystem:

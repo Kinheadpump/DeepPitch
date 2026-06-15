@@ -26,7 +26,7 @@ class LiveLineupScanner:
         try:
             # 1. Das heutige Spiel suchen
             url_fixtures = f"https://v3.football.api-sports.io/fixtures?date={today}"
-            res_fix = requests.get(url_fixtures, headers=self.headers).json()
+            res_fix = requests.get(url_fixtures, headers=self.headers, timeout=10).json()
 
             fixture_id, team_id = None, None
             
@@ -50,7 +50,7 @@ class LiveLineupScanner:
 
             # 2. Die Aufstellung für dieses Spiel abrufen
             url_lineup = f"https://v3.football.api-sports.io/fixtures/lineups?fixture={fixture_id}&team={team_id}"
-            res_lineup = requests.get(url_lineup, headers=self.headers).json()
+            res_lineup = requests.get(url_lineup, headers=self.headers, timeout=10).json()
 
             if not res_lineup.get('response'):
                 return None, "Aufstellung noch nicht veröffentlicht (idR. 60 Min vor Anpfiff)."
@@ -81,11 +81,18 @@ class LiveLineupScanner:
         nation_names = df_nation['short_name'].dropna().tolist() + df_nation['long_name'].dropna().tolist()
         nation_names = list(set([str(x) for x in nation_names]))
 
+        if not nation_names:
+            return None, ["❌ Keine Spielernamen für diese Nation in der FIFA-Datenbank gefunden."]
+
         matched_players = []
         match_logs = [f"✅ API-Daten erfolgreich abgerufen: {api_status}"]
-        
+
         for name in lineup_names:
-            best_match, score = process.extractOne(name, nation_names)
+            result = process.extractOne(name, nation_names)
+            if result is None:
+                match_logs.append(f"⚠️ {name} -> Kein Match gefunden. Wird übersprungen.")
+                continue
+            best_match, score = result
             if score > 75:
                 player_data = df_nation[(df_nation['short_name'] == best_match) | (df_nation['long_name'] == best_match)].iloc[0]
                 matched_players.append(player_data)

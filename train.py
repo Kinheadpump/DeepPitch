@@ -16,8 +16,8 @@ def train_and_save_model():
     
     df_features = bt._generate_historical_features(df, fifa_ratings)
     
-    # 2. Den Random Forest trainieren
-    print("\n🌲 Trainiere Random Forest Classifier...")
+    # 2. Das Gradient Boosting Modell trainieren
+    print("\n🌲 Trainiere Gradient Boosting Classifier...")
     model = MetaMachineLearningModel()
     model.train(df_features)
     

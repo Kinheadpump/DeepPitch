@@ -19,11 +19,11 @@ class LiveOracleAPI:
             
             # API Anfrage mit Zeitfilter
             url = f"https://api.football-data.org/v4/matches?dateFrom={date_from}&dateTo={date_to}"
-            response = requests.get(url, headers=self.headers)
+            response = requests.get(url, headers=self.headers, timeout=10)
             
             if response.status_code != 200:
                 print(f"[API ERROR] {response.status_code}: {response.text}")
-                return []
+                return None
                 
             data = response.json()
             matches = []
@@ -48,6 +48,9 @@ class LiveOracleAPI:
                 
             return matches[:15] # Maximal 15 Spiele zurückgeben, um das UI nicht zu sprengen
             
+        except requests.exceptions.Timeout:
+            print("[API ERROR] Request timed out after 10s.")
+            return None
         except Exception as e:
             print(f"[API ERROR] {e}")
-            return []
+            return None

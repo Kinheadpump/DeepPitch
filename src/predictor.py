@@ -1,3 +1,12 @@
+# DEPRECATED — do not import this module.
+# WorldCupPredictor references PoissonBaseModel (removed) and the old
+# MetaMachineLearningModel signature (4 args vs current 7). It will crash on import.
+# The active pipeline lives in src/backtester.py + src/models.py.
+raise ImportError(
+    "src/predictor.py is a legacy stub and has been disabled. "
+    "Use src/backtester.py and src/models.py instead."
+)
+
 import pandas as pd
 from src.data_loader import DataLoader
 from src.features import EloCalculator
