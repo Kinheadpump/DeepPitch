@@ -1,6 +1,8 @@
+import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import make_scorer
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 from sklearn.ensemble import GradientBoostingClassifier
 
@@ -9,6 +11,31 @@ try:
     _LGBM = True
 except ImportError:
     _LGBM = False
+
+
+def _ordinal_match_score(y_true, y_pred):
+    """Ordinal betting point system at the 1X2 level.
+
+    Classes are ordered: 0=away_win, 1=draw, 2=home_win.
+
+      +2  correct outcome (winner/draw identified)
+       0  adjacent mistake  (e.g. home_win predicted as draw)
+      -2  catastrophic mistake (home_win predicted as away_win, or vice versa)
+
+    Catastrophic mistakes are penalised 2× harder than standard accuracy,
+    pushing the model to prefer a cautious draw prediction over a confidently
+    wrong direction when the evidence is weak.
+
+    Return value is normalised to [-1, +1] so GridSearchCV can compare folds.
+    """
+    y_t = np.asarray(y_true, dtype=int)
+    y_p = np.asarray(y_pred, dtype=int)
+    diff = np.abs(y_t - y_p)
+    points = np.where(diff == 0, 2, np.where(diff == 1, 0, -2))
+    return float(points.sum()) / (2 * len(y_t))
+
+
+_ordinal_scorer = make_scorer(_ordinal_match_score)
 
 class MetaMachineLearningModel:
     def __init__(self):
@@ -28,6 +55,13 @@ class MetaMachineLearningModel:
         X = df_sorted[self.feature_names]
         y = df_sorted['outcome']
         X_scaled = pd.DataFrame(self.scaler.fit_transform(X), columns=self.feature_names)
+
+        # Exponential time-decay: 3-year half-life so recent World Cup games matter
+        # more without dramatically discounting older data. Normalised to mean=1 so
+        # the effective sample size is unchanged — only relative emphasis shifts.
+        days_ago = (pd.Timestamp.today() - pd.to_datetime(df_sorted['date'])).dt.days.clip(lower=0)
+        raw_w = np.exp(-np.log(2) * days_ago.values / (3 * 365))
+        sample_weight = raw_w / raw_w.mean()
 
         tscv = TimeSeriesSplit(n_splits=5)
 
@@ -70,7 +104,7 @@ class MetaMachineLearningModel:
             verbose=1,
             refit=True,
         )
-        grid_search.fit(X_scaled, y)
+        grid_search.fit(X_scaled, y, sample_weight=sample_weight)
         self.best_params = grid_search.best_params_
         print(f"[Model] Beste Parameter: {self.best_params}")
         print(f"[Model] Walk-Forward CV-Genauigkeit (unkalibriert): {grid_search.best_score_*100:.2f}%")
@@ -86,7 +120,7 @@ class MetaMachineLearningModel:
                 n_jobs=-1,
             )
             self.model = CalibratedClassifierCV(best_lgbm, cv=tscv, method='isotonic')
-            self.model.fit(X_scaled, y)
+            self.model.fit(X_scaled, y, sample_weight=sample_weight)
             print("[Model] Isotonic Calibration abgeschlossen.")
         else:
             self.model = grid_search.best_estimator_

@@ -219,15 +219,15 @@ class PoissonEngine:
         best_outcome = max(probs_ml, key=probs_ml.get)
 
         if best_outcome == 'home_win':
-            mask = np.tril(probs_matrix, -1)       # lower triangle = home wins
+            mask = np.tril(probs_matrix, -1)
             idx = np.unravel_index(np.argmax(mask), mask.shape)
             return int(idx[0]), int(idx[1])
         elif best_outcome == 'away_win':
-            mask = np.triu(probs_matrix, 1)         # upper triangle = away wins
+            mask = np.triu(probs_matrix, 1)
             idx = np.unravel_index(np.argmax(mask), mask.shape)
             return int(idx[0]), int(idx[1])
         else:
-            diag = np.diag(probs_matrix)            # diagonal = draws
+            diag = np.diag(probs_matrix)
             best = int(np.argmax(diag))
             return best, best
 
